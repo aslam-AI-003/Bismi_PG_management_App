@@ -8,6 +8,7 @@ function Customers({ apiUrl, onViewProfile }) {
   const [showForm, setShowForm] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [filter, setFilter] = useState('Active');
+  const [idProofFile, setIdProofFile] = useState(null);
   const [form, setForm] = useState({
     name: '', phone: '', email: '', emergency_contact: '', emergency_name: '',
     aadhaar_number: '', address: '', room_id: '', bed_id: '',
@@ -48,8 +49,20 @@ function Customers({ apiUrl, onViewProfile }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      await axios.post(`${apiUrl}/api/customers`, form);
+      const res = await axios.post(`${apiUrl}/api/customers`, form);
+      
+      // Upload ID proof if selected
+      if (idProofFile && res.data.id) {
+        const formData = new FormData();
+        formData.append('id_proof', idProofFile);
+        formData.append('customer_id', res.data.id);
+        await axios.post(`${apiUrl}/api/customers/${res.data.id}/upload-id`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        });
+      }
+      
       setShowForm(false);
+      setIdProofFile(null);
       setForm({
         name: '', phone: '', email: '', emergency_contact: '', emergency_name: '',
         aadhaar_number: '', address: '', room_id: '', bed_id: '',
@@ -59,6 +72,27 @@ function Customers({ apiUrl, onViewProfile }) {
       fetchCustomers();
       fetchVacantBeds();
     } catch (err) { alert('Error: ' + (err.response?.data?.error || err.message)); }
+  };
+
+  const uploadIdProof = async (customerId) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,.pdf';
+    input.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const formData = new FormData();
+        formData.append('id_proof', file);
+        try {
+          await axios.post(`${apiUrl}/api/customers/${customerId}/upload-id`, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+          });
+          alert('ID Proof uploaded successfully!');
+          viewCustomer(customerId);
+        } catch (err) { alert('Upload failed'); }
+      }
+    };
+    input.click();
   };
 
   const checkoutCustomer = async (id) => {
@@ -72,9 +106,9 @@ function Customers({ apiUrl, onViewProfile }) {
     }
   };
 
-  const sendWhatsApp = (phone, name) => {
-    const message = `Hi ${name}, this is a reminder from BISMI MEN'S PLAZA regarding your monthly rent payment. Please make the payment at your earliest convenience. Thank you!`;
-    const cleanPhone = phone.replace(/\D/g, '');
+  const sendWhatsAppReminder = (customer) => {
+    const message = `Hi ${customer.name},\n\n🏠 *BISMI MEN'S PLAZA*\n\nThis is a reminder for your monthly rent payment.\n\n💰 Rent: ₹${customer.monthly_rent}\n\n💳 UPI: 9894092449@jupiteraxis\n📱 Phone: 9894092449\n\nPlease pay at your earliest convenience.\nThank you! 🙏`;
+    const cleanPhone = customer.phone.replace(/\D/g, '');
     window.open(`https://wa.me/91${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
   };
 
@@ -102,11 +136,29 @@ function Customers({ apiUrl, onViewProfile }) {
           {selectedCustomer.notes && <p><strong>Notes:</strong> {selectedCustomer.notes}</p>}
         </div>
 
+        {/* ID Proof Section */}
+        <div className="detail-card">
+          <h3 className="section-title">📄 ID Proof</h3>
+          {selectedCustomer.id_proof_photo ? (
+            <div className="id-proof-display">
+              <img src={`${apiUrl}/uploads/${selectedCustomer.id_proof_photo}`} alt="ID Proof" className="id-proof-image" />
+              <button className="btn btn-secondary" onClick={() => window.open(`${apiUrl}/uploads/${selectedCustomer.id_proof_photo}`, '_blank')}>
+                🔍 View Full Size
+              </button>
+            </div>
+          ) : (
+            <p className="empty-text">No ID proof uploaded</p>
+          )}
+          <button className="btn btn-primary" onClick={() => uploadIdProof(selectedCustomer.id)} style={{marginTop: '8px'}}>
+            📷 {selectedCustomer.id_proof_photo ? 'Change' : 'Upload'} ID Proof
+          </button>
+        </div>
+
         <div className="action-buttons">
           <button className="btn btn-profile" onClick={() => onViewProfile && onViewProfile(selectedCustomer.id)}>
             👤 View Profile
           </button>
-          <button className="btn btn-whatsapp" onClick={() => sendWhatsApp(selectedCustomer.phone, selectedCustomer.name)}>
+          <button className="btn btn-whatsapp" onClick={() => sendWhatsAppReminder(selectedCustomer)}>
             📱 WhatsApp
           </button>
           <a href={`tel:${selectedCustomer.phone}`} className="btn btn-primary">📞 Call</a>
@@ -126,6 +178,7 @@ function Customers({ apiUrl, onViewProfile }) {
                   <div>
                     <strong>{p.month} {p.year}</strong>
                     <span className="list-subtitle">{p.payment_method} - {p.payment_date}</span>
+                    {p.notes && <span className="list-subtitle">{p.notes}</span>}
                   </div>
                   <div>
                     <span className="amount">₹{p.amount}</span>
@@ -143,14 +196,14 @@ function Customers({ apiUrl, onViewProfile }) {
   return (
     <div className="page">
       <div className="page-header">
-        <h2 className="page-title">Customers</h2>
+        <h2 className="page-title">Tenants</h2>
         <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>+ Add</button>
       </div>
 
       <div className="filter-tabs">
         {['Active', 'Vacated', 'All'].map(f => (
           <button key={f} className={`filter-tab ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
-            {f}
+            {f} {f === 'Active' ? `(${customers.filter(c => c.status === 'Active').length})` : ''}
           </button>
         ))}
       </div>
@@ -216,10 +269,15 @@ function Customers({ apiUrl, onViewProfile }) {
             <input type="number" value={form.security_deposit} onChange={e => setForm({...form, security_deposit: parseFloat(e.target.value)})} />
           </div>
           <div className="form-group">
+            <label>📷 ID Proof (Aadhaar/Photo)</label>
+            <input type="file" accept="image/*,.pdf" onChange={e => setIdProofFile(e.target.files[0])} />
+            <span className="form-help">Upload Aadhaar card or any ID proof image</span>
+          </div>
+          <div className="form-group">
             <label>Notes</label>
             <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} />
           </div>
-          <button type="submit" className="btn btn-primary btn-full">Add Customer</button>
+          <button type="submit" className="btn btn-primary btn-full">Add Tenant</button>
         </form>
       )}
 
@@ -239,7 +297,7 @@ function Customers({ apiUrl, onViewProfile }) {
             </div>
           </div>
         ))}
-        {filteredCustomers.length === 0 && <p className="empty-text">No customers found</p>}
+        {filteredCustomers.length === 0 && <p className="empty-text">No tenants found</p>}
       </div>
     </div>
   );

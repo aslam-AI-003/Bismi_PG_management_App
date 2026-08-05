@@ -439,6 +439,17 @@ app.put('/api/settings', (req, res) => {
   }
 });
 
+// ==================== ID PROOF UPLOAD ====================
+app.post('/api/customers/:id/upload-id', upload.single('id_proof'), (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    db.prepare('UPDATE customers SET id_proof_photo = ? WHERE id = ?').run(req.file.filename, req.params.id);
+    res.json({ message: 'ID proof uploaded successfully', filename: req.file.filename });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ==================== TENANT PROFILE (Public Shareable) ====================
 app.get('/api/tenant/:id', (req, res) => {
   try {

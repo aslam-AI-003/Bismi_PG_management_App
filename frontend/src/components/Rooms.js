@@ -4,6 +4,7 @@ import axios from 'axios';
 function Rooms({ apiUrl }) {
   const [rooms, setRooms] = useState([]);
   const [showForm, setShowForm] = useState(false);
+  const [editMode, setEditMode] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [form, setForm] = useState({
     room_number: '', floor: 1, room_type: 'Non-AC', sharing_type: 2, total_beds: 2, rent_per_bed: 0
@@ -28,11 +29,31 @@ function Rooms({ apiUrl }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      await axios.post(`${apiUrl}/api/rooms`, form);
+      if (editMode && selectedRoom) {
+        await axios.put(`${apiUrl}/api/rooms/${selectedRoom.id}`, form);
+        setEditMode(false);
+        setSelectedRoom(null);
+      } else {
+        await axios.post(`${apiUrl}/api/rooms`, form);
+      }
       setShowForm(false);
       setForm({ room_number: '', floor: 1, room_type: 'Non-AC', sharing_type: 2, total_beds: 2, rent_per_bed: 0 });
       fetchRooms();
     } catch (err) { alert('Error: ' + (err.response?.data?.error || err.message)); }
+  };
+
+  const startEdit = () => {
+    setForm({
+      room_number: selectedRoom.room_number,
+      floor: selectedRoom.floor,
+      room_type: selectedRoom.room_type,
+      sharing_type: selectedRoom.sharing_type,
+      total_beds: selectedRoom.total_beds,
+      rent_per_bed: selectedRoom.rent_per_bed,
+      status: selectedRoom.status
+    });
+    setEditMode(true);
+    setShowForm(true);
   };
 
   const deleteRoom = async (id) => {
@@ -45,7 +66,7 @@ function Rooms({ apiUrl }) {
     }
   };
 
-  if (selectedRoom) {
+  if (selectedRoom && !editMode) {
     return (
       <div className="page">
         <div className="page-header">
@@ -53,6 +74,7 @@ function Rooms({ apiUrl }) {
           <h2>{selectedRoom.room_number}</h2>
         </div>
         <div className="detail-card">
+          <p><strong>Room Name:</strong> {selectedRoom.room_number}</p>
           <p><strong>Floor:</strong> {selectedRoom.floor}</p>
           <p><strong>Type:</strong> {selectedRoom.room_type}</p>
           <p><strong>Sharing:</strong> {selectedRoom.sharing_type} sharing</p>
@@ -60,6 +82,12 @@ function Rooms({ apiUrl }) {
           <p><strong>Rent/Bed:</strong> ₹{selectedRoom.rent_per_bed}</p>
           <p><strong>Status:</strong> <span className={`badge ${selectedRoom.status === 'Available' ? 'badge-green' : 'badge-red'}`}>{selectedRoom.status}</span></p>
         </div>
+        
+        <div className="action-buttons">
+          <button className="btn btn-primary" onClick={startEdit}>✏️ Edit Room</button>
+          <button className="btn btn-danger" onClick={() => deleteRoom(selectedRoom.id)}>🗑️ Delete</button>
+        </div>
+
         <h3 className="section-title">Beds</h3>
         <div className="beds-grid">
           {selectedRoom.beds?.map(bed => (
@@ -71,7 +99,6 @@ function Rooms({ apiUrl }) {
             </div>
           ))}
         </div>
-        <button className="btn btn-danger" onClick={() => deleteRoom(selectedRoom.id)}>Delete Room</button>
       </div>
     );
   }
@@ -79,26 +106,27 @@ function Rooms({ apiUrl }) {
   return (
     <div className="page">
       <div className="page-header">
-        <h2 className="page-title">Rooms</h2>
-        <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>+ Add Room</button>
+        <h2 className="page-title">{editMode ? 'Edit Room' : 'Rooms'}</h2>
+        {!editMode && <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); setEditMode(false); }}>+ Add Room</button>}
       </div>
 
-      {showForm && (
+      {(showForm || editMode) && (
         <form className="form-card" onSubmit={handleSubmit}>
           <div className="form-group">
-            <label>Room Number</label>
-            <input type="text" value={form.room_number} onChange={e => setForm({...form, room_number: e.target.value})} required />
+            <label>Room Name / Number *</label>
+            <input type="text" placeholder="e.g. Room A, 101, Ground Floor Room" value={form.room_number} onChange={e => setForm({...form, room_number: e.target.value})} required />
           </div>
           <div className="form-row">
             <div className="form-group">
-              <label>Floor</label>
-              <input type="number" value={form.floor} onChange={e => setForm({...form, floor: parseInt(e.target.value)})} />
+              <label>Floor Number</label>
+              <input type="number" placeholder="e.g. 1, 2, 3" value={form.floor} onChange={e => setForm({...form, floor: parseInt(e.target.value) || 1})} min="0" />
             </div>
             <div className="form-group">
-              <label>Type</label>
+              <label>Room Type</label>
               <select value={form.room_type} onChange={e => setForm({...form, room_type: e.target.value})}>
                 <option>Non-AC</option>
                 <option>AC</option>
+                <option>Semi-AC</option>
               </select>
             </div>
           </div>
@@ -112,14 +140,27 @@ function Rooms({ apiUrl }) {
                 <option value={4}>4 Sharing</option>
                 <option value={5}>5 Sharing</option>
                 <option value={6}>6 Sharing</option>
+                <option value={8}>8 Sharing</option>
               </select>
             </div>
             <div className="form-group">
-              <label>Rent/Bed (₹)</label>
-              <input type="number" value={form.rent_per_bed} onChange={e => setForm({...form, rent_per_bed: parseFloat(e.target.value)})} />
+              <label>Rent per Bed (₹)</label>
+              <input type="number" placeholder="Monthly rent" value={form.rent_per_bed} onChange={e => setForm({...form, rent_per_bed: parseFloat(e.target.value) || 0})} />
             </div>
           </div>
-          <button type="submit" className="btn btn-primary btn-full">Add Room</button>
+          {editMode && (
+            <div className="form-group">
+              <label>Status</label>
+              <select value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
+                <option value="Available">Available</option>
+                <option value="Under Maintenance">Under Maintenance</option>
+              </select>
+            </div>
+          )}
+          <div className="action-buttons">
+            <button type="submit" className="btn btn-primary btn-full">{editMode ? 'Update Room' : 'Add Room'}</button>
+            {editMode && <button type="button" className="btn btn-secondary" onClick={() => { setEditMode(false); setShowForm(false); setSelectedRoom(null); }}>Cancel</button>}
+          </div>
         </form>
       )}
 
@@ -133,7 +174,7 @@ function Rooms({ apiUrl }) {
               </span>
             </div>
             <div className="room-info">
-              <span>{room.sharing_type} Sharing | {room.room_type}</span>
+              <span>Floor {room.floor} | {room.sharing_type} Sharing | {room.room_type}</span>
               <span className="room-occupancy">
                 🛏️ {room.occupied_beds}/{room.total_beds} beds
               </span>

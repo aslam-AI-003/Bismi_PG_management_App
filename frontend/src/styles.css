@@ -889,6 +889,20 @@ body {
   font-weight: 500;
 }
 
+/* ============ ID PROOF ============ */
+.id-proof-display {
+  margin: 10px 0;
+  text-align: center;
+}
+
+.id-proof-image {
+  width: 100%;
+  max-width: 300px;
+  border-radius: 8px;
+  border: 2px solid var(--border);
+  margin-bottom: 8px;
+}
+
 /* ============ LOADING & EMPTY ============ */
 .loading {
   text-align: center;
