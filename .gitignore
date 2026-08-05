@@ -1,0 +1,9 @@
+node_modules/
+build/
+*.db
+*.db-shm
+*.db-wal
+uploads/*.jpg
+uploads/*.png
+uploads/*.jpeg
+.env

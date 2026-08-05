@@ -1,0 +1,22 @@
+{
+  "short_name": "Bismi PG",
+  "name": "Bismi PG Management App",
+  "description": "PG Management App for BISMI MEN'S PLAZA - Developed by ASVEN Technology",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#1a73e8",
+  "background_color": "#ffffff",
+  "orientation": "portrait"
+}
