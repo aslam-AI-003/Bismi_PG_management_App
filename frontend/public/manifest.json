@@ -1,22 +1,26 @@
 {
   "short_name": "Bismi PG",
-  "name": "Bismi PG Management App",
-  "description": "PG Management App for BISMI MEN'S PLAZA - Developed by ASVEN Technology",
+  "name": "BISMI MEN'S PLAZA - PG Management",
+  "description": "PG Management App for Bismi Men's Plaza. Manage rooms, tenants, payments and more.",
   "icons": [
     {
-      "src": "icon-192.png",
+      "src": "logo.png",
+      "sizes": "192x192",
       "type": "image/png",
-      "sizes": "192x192"
+      "purpose": "any maskable"
     },
     {
-      "src": "icon-512.png",
+      "src": "logo.png",
+      "sizes": "512x512",
       "type": "image/png",
-      "sizes": "512x512"
+      "purpose": "any maskable"
     }
   ],
-  "start_url": ".",
+  "start_url": "/",
   "display": "standalone",
-  "theme_color": "#1a73e8",
+  "theme_color": "#1a6b3c",
   "background_color": "#ffffff",
-  "orientation": "portrait"
+  "orientation": "portrait",
+  "scope": "/",
+  "categories": ["business", "productivity"]
 }

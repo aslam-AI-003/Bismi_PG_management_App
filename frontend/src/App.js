@@ -1,108 +1,156 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import './styles.css';
+import Login from './components/Login';
+import TenantDashboard from './components/TenantDashboard';
 import Dashboard from './components/Dashboard';
 import Customers from './components/Customers';
 import Rooms from './components/Rooms';
 import Payments from './components/Payments';
 import Electricity from './components/Electricity';
 import Expenses from './components/Expenses';
+import Issues from './components/Issues';
+import Reports from './components/Reports';
 import TenantProfile from './components/TenantProfile';
 
-const API_URL = process.env.REACT_APP_API_URL || '';
+const API_URL = process.env.REACT_APP_API_URL || 'https://bismi-pg-backend.onrender.com';
 
 function App() {
-  const [currentPage, setCurrentPage] = useState(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    return urlParams.get('tenant') ? 'tenant-profile' : 'dashboard';
-  });
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [tenantId, setTenantId] = useState(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const id = urlParams.get('tenant');
-    return id ? parseInt(id) : null;
-  });
+  const [role, setRole] = useState(null);
+  const [tenant, setTenant] = useState(null);
+  const [currentPage, setCurrentPage] = useState('dashboard');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [viewProfileId, setViewProfileId] = useState(null);
 
-  const navigateToTenantProfile = (id) => {
-    setTenantId(id);
-    setCurrentPage('tenant-profile');
+  useEffect(() => {
+    const savedRole = localStorage.getItem('bismi_role');
+    if (savedRole === 'admin') {
+      setRole('admin');
+    } else if (savedRole === 'tenant') {
+      const savedTenant = localStorage.getItem('bismi_tenant');
+      if (savedTenant) {
+        setRole('tenant');
+        setTenant(JSON.parse(savedTenant));
+      }
+    }
+  }, []);
+
+  const handleLogin = (userRole, tenantData) => {
+    setRole(userRole);
+    setTenant(tenantData);
   };
 
-  const pages = {
-    dashboard: <Dashboard apiUrl={API_URL} onNavigate={setCurrentPage} />,
-    customers: <Customers apiUrl={API_URL} onViewProfile={navigateToTenantProfile} />,
-    rooms: <Rooms apiUrl={API_URL} />,
-    payments: <Payments apiUrl={API_URL} />,
-    electricity: <Electricity apiUrl={API_URL} />,
-    expenses: <Expenses apiUrl={API_URL} />,
-    'tenant-profile': <TenantProfile apiUrl={API_URL} tenantId={tenantId} onBack={() => setCurrentPage('customers')} />,
+  const handleLogout = () => {
+    localStorage.removeItem('bismi_role');
+    localStorage.removeItem('bismi_token');
+    localStorage.removeItem('bismi_tenant');
+    setRole(null);
+    setTenant(null);
+    setCurrentPage('dashboard');
   };
 
-  const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: '🏠' },
-    { id: 'customers', label: 'Tenants', icon: '👥' },
-    { id: 'rooms', label: 'Rooms', icon: '🛏️' },
-    { id: 'payments', label: 'Payments', icon: '💰' },
-    { id: 'electricity', label: 'Electricity', icon: '⚡' },
-    { id: 'expenses', label: 'Expenses', icon: '📊' },
-  ];
+  // Show Login if not logged in
+  if (!role) {
+    return <Login apiUrl={API_URL} onLogin={handleLogin} />;
+  }
+
+  // Show Tenant Dashboard
+  if (role === 'tenant') {
+    return <TenantDashboard apiUrl={API_URL} tenant={tenant} onLogout={handleLogout} />;
+  }
+
+  // Tenant Profile View
+  if (viewProfileId) {
+    return (
+      <div className="app">
+        <div className="main-content">
+          <button className="btn btn-secondary" onClick={() => setViewProfileId(null)}>← Back</button>
+          <TenantProfile apiUrl={API_URL} customerId={viewProfileId} />
+        </div>
+      </div>
+    );
+  }
+
+  // Admin Dashboard
+  const renderPage = () => {
+    switch(currentPage) {
+      case 'dashboard': return <Dashboard apiUrl={API_URL} onNavigate={setCurrentPage} />;
+      case 'customers': return <Customers apiUrl={API_URL} onViewProfile={setViewProfileId} />;
+      case 'rooms': return <Rooms apiUrl={API_URL} />;
+      case 'payments': return <Payments apiUrl={API_URL} />;
+      case 'electricity': return <Electricity apiUrl={API_URL} />;
+      case 'expenses': return <Expenses apiUrl={API_URL} />;
+      case 'issues': return <Issues apiUrl={API_URL} />;
+      case 'reports': return <Reports apiUrl={API_URL} />;
+      default: return <Dashboard apiUrl={API_URL} onNavigate={setCurrentPage} />;
+    }
+  };
 
   return (
     <div className="app">
-      {/* Watermark */}
-      <div className="watermark">
-        <img src="/logo.png" alt="" />
-      </div>
-
       {/* Header */}
-      <header className="header">
-        <button className="menu-btn" onClick={() => setMenuOpen(!menuOpen)}>☰</button>
+      <div className="header">
+        <button className="menu-btn" onClick={() => setSidebarOpen(true)}>☰</button>
         <img src="/logo.png" alt="Logo" className="header-logo" />
         <h1>BISMI MEN'S PLAZA</h1>
-      </header>
+        <span className="header-badge">Admin</span>
+      </div>
 
-      {/* Side Menu Overlay */}
-      {menuOpen && <div className="overlay" onClick={() => setMenuOpen(false)} />}
-      
-      {/* Side Menu */}
-      <nav className={`sidebar ${menuOpen ? 'open' : ''}`}>
+      {/* Sidebar */}
+      {sidebarOpen && <div className="overlay" onClick={() => setSidebarOpen(false)} />}
+      <div className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
-          <img src="/logo.png" alt="Bismi Logo" className="sidebar-logo" />
-          <h2>Bismi PG</h2>
-          <p className="sidebar-subtitle">Management App</p>
+          <img src="/logo.png" alt="Logo" className="sidebar-logo" />
+          <h2>BISMI MEN'S PLAZA</h2>
+          <p className="sidebar-subtitle">Admin Panel</p>
         </div>
-        {navItems.map(item => (
-          <button
-            key={item.id}
-            className={`nav-item ${currentPage === item.id ? 'active' : ''}`}
-            onClick={() => { setCurrentPage(item.id); setMenuOpen(false); }}
-          >
-            <span className="nav-icon">{item.icon}</span>
-            <span>{item.label}</span>
+        {[
+          { id: 'dashboard', icon: '🏠', label: 'Dashboard' },
+          { id: 'customers', icon: '👥', label: 'Tenants' },
+          { id: 'rooms', icon: '🛏️', label: 'Rooms' },
+          { id: 'payments', icon: '💰', label: 'Payments' },
+          { id: 'electricity', icon: '⚡', label: 'Electricity' },
+          { id: 'expenses', icon: '📤', label: 'Expenses' },
+          { id: 'issues', icon: '🎫', label: 'Issues' },
+          { id: 'reports', icon: '📊', label: 'Reports' },
+        ].map(item => (
+          <button key={item.id} className={`nav-item ${currentPage === item.id ? 'active' : ''}`}
+            onClick={() => { setCurrentPage(item.id); setSidebarOpen(false); }}>
+            <span className="nav-icon">{item.icon}</span> {item.label}
           </button>
         ))}
+        <button className="nav-item" onClick={handleLogout}>
+          <span className="nav-icon">🚪</span> Logout
+        </button>
         <div className="sidebar-footer">
-          <p>Developed by</p>
           <p className="developer-name">ASVEN Technology</p>
+          <p>v2.0</p>
         </div>
-      </nav>
+      </div>
+
+      {/* Watermark */}
+      <div className="watermark"><img src="/logo.png" alt="" /></div>
 
       {/* Main Content */}
-      <main className="main-content">
-        {pages[currentPage]}
-      </main>
+      <div className="main-content">
+        {renderPage()}
+      </div>
 
-      {/* Bottom Navigation */}
-      <nav className="bottom-nav">
-        {navItems.slice(0, 5).map(item => (
-          <button
-            key={item.id}
-            className={`bottom-nav-item ${currentPage === item.id ? 'active' : ''}`}
-            onClick={() => setCurrentPage(item.id)}
-          >
+      {/* Bottom Nav */}
+      <div className="bottom-nav">
+        {[
+          { id: 'dashboard', icon: '🏠', label: 'Dashboard' },
+          { id: 'customers', icon: '👥', label: 'Tenants' },
+          { id: 'rooms', icon: '🛏️', label: 'Rooms' },
+          { id: 'payments', icon: '💰', label: 'Payments' },
+          { id: 'electricity', icon: '⚡', label: 'Electricity' },
+        ].map(item => (
+          <button key={item.id} className={`bottom-nav-item ${currentPage === item.id ? 'active' : ''}`}
+            onClick={() => setCurrentPage(item.id)}>
             <span className="bottom-nav-icon">{item.icon}</span>
             <span className="bottom-nav-label">{item.label}</span>
           </button>
         ))}
-      </nav>
+      </div>
     </div>
   );
 }

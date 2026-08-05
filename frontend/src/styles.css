@@ -903,6 +903,91 @@ body {
   margin-bottom: 8px;
 }
 
+/* ============ LOGIN PAGE ============ */
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #1a6b3c 0%, #0d4d2b 100%);
+  padding: 20px;
+}
+
+.login-container {
+  background: white;
+  border-radius: 20px;
+  padding: 40px 30px;
+  width: 100%;
+  max-width: 400px;
+  text-align: center;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+}
+
+.login-logo-img {
+  width: 100px;
+  height: 100px;
+  object-fit: contain;
+  margin-bottom: 16px;
+}
+
+.login-title { font-size: 22px; color: var(--primary); font-weight: 700; margin-bottom: 4px; }
+.login-subtitle { font-size: 14px; color: var(--text-light); margin-bottom: 30px; }
+.login-role-title { font-size: 18px; color: var(--text); margin-bottom: 20px; }
+
+.login-roles { display: flex; flex-direction: column; gap: 14px; margin: 20px 0; }
+
+.role-btn {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 20px; border: 2px solid var(--border); border-radius: 14px;
+  background: white; cursor: pointer; transition: all 0.2s;
+}
+.role-btn:hover { border-color: var(--primary); background: #e8f5e9; }
+.role-icon { font-size: 32px; }
+.role-name { font-size: 16px; font-weight: 600; color: var(--text); }
+.role-desc { font-size: 12px; color: var(--text-light); }
+
+.login-form { text-align: left; margin: 20px 0; }
+.login-field { margin-bottom: 16px; }
+.login-field label { display: block; font-size: 13px; font-weight: 500; color: var(--text-light); margin-bottom: 6px; }
+.login-field input {
+  width: 100%; padding: 12px 14px; border: 1px solid var(--border);
+  border-radius: 10px; font-size: 15px; transition: border-color 0.2s;
+}
+.login-field input:focus { outline: none; border-color: var(--primary); }
+
+.login-btn {
+  width: 100%; padding: 14px; background: var(--primary); color: white;
+  border: none; border-radius: 10px; font-size: 16px; font-weight: 600;
+  cursor: pointer; transition: background 0.2s;
+}
+.login-btn:hover { background: var(--primary-dark); }
+.login-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+
+.login-error { background: #fce8e6; color: var(--red); padding: 10px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; text-align: center; }
+.login-back { background: none; border: none; color: var(--primary); cursor: pointer; margin-top: 16px; font-size: 14px; }
+.login-help { margin-top: 16px; background: #f5f7f5; padding: 10px; border-radius: 8px; font-size: 12px; color: var(--text-light); }
+.login-footer { margin-top: 24px; font-size: 12px; color: var(--text-light); }
+
+/* ============ TENANT WELCOME ============ */
+.tenant-welcome {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+  color: white; padding: 20px; border-radius: 14px; margin-bottom: 16px; text-align: center;
+}
+.tenant-welcome h2 { font-size: 20px; margin-bottom: 4px; }
+.tenant-welcome p { opacity: 0.9; font-size: 14px; }
+
+/* ============ ISSUE CARDS ============ */
+.issue-card {
+  background: white; border-radius: 12px; padding: 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06); margin-bottom: 10px;
+}
+.issue-header { display: flex; gap: 10px; align-items: flex-start; }
+.issue-status-dot { font-size: 16px; margin-top: 2px; }
+.issue-desc { font-size: 13px; color: var(--text-light); margin: 8px 0; padding-left: 26px; }
+.issue-response { font-size: 12px; color: var(--primary); padding-left: 26px; font-style: italic; }
+.issue-respond { margin-top: 8px; }
+.issue-respond input { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; margin-bottom: 8px; }
+
 /* ============ LOADING & EMPTY ============ */
 .loading {
   text-align: center;
