@@ -7,3 +7,6 @@ uploads/*.jpg
 uploads/*.png
 uploads/*.jpeg
 .env
+.env.local
+.env.production
+backend/.env

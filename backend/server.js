@@ -1,509 +1,657 @@
-// Bismi PG Backend v2.1 - With Login & Issues System
+// Bismi PG Backend v3.0 - Supabase PostgreSQL + Production Ready
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
 const multer = require('multer');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// ==================== MIDDLEWARE ====================
 
-// Frontend is hosted on Vercel separately
-// app.use(express.static(path.join(__dirname, '../frontend/build')));
+// Security headers
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 
-// File upload config
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, 'uploads'));
+// CORS - Allow frontend origins
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://bismi-pg-app.vercel.app',
+  'https://bismi-pg-management-app.vercel.app',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
+app.use(cors({
+  origin: function(origin, callback) {
+    if (!origin || allowedOrigins.some(o => origin.startsWith(o.replace(/\/$/, '')))) {
+      callback(null, true);
+    } else {
+      callback(null, true); // Allow all in development, restrict in production if needed
+    }
   },
-  filename: (req, file, cb) => {
-    cb(null, uuidv4() + path.extname(file.originalname));
+  credentials: true
+}));
+
+app.use(express.json({ limit: '10mb' }));
+
+// Rate limiting
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200, // max 200 requests per windowMs
+  message: { error: 'Too many requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10, // max 10 login attempts per 15 min
+  message: { error: 'Too many login attempts, please try again later.' }
+});
+
+app.use('/api/', apiLimiter);
+app.use('/api/admin/login', authLimiter);
+app.use('/api/tenant/login', authLimiter);
+
+// File upload config (memory storage for Supabase upload)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only images (JPEG, PNG, WebP) and PDF files are allowed'));
+    }
   }
 });
-const upload = multer({ storage });
 
-// Database
-const db = require('./database');
+// Database (Supabase client)
+const supabase = require('./database');
+
+// ==================== ERROR HANDLER ====================
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('❌ Error:', err.message);
+  
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'File too large. Maximum 5MB allowed.' });
+    }
+    return res.status(400).json({ error: err.message });
+  }
+  
+  res.status(err.status || 500).json({
+    error: process.env.NODE_ENV === 'production' 
+      ? 'Internal server error' 
+      : err.message
+  });
+});
 
 // ==================== DASHBOARD ====================
-app.get('/api/dashboard', (req, res) => {
-  try {
-    const totalRooms = db.prepare('SELECT COUNT(*) as count FROM rooms').get().count;
-    const totalBeds = db.prepare('SELECT COUNT(*) as count FROM beds').get().count;
-    const occupiedBeds = db.prepare("SELECT COUNT(*) as count FROM beds WHERE status = 'Occupied'").get().count;
-    const vacantBeds = totalBeds - occupiedBeds;
-    const activeCustomers = db.prepare("SELECT COUNT(*) as count FROM customers WHERE status = 'Active'").get().count;
-    
-    const currentMonth = new Date().toLocaleString('default', { month: 'long' });
-    const currentYear = new Date().getFullYear();
-    
-    const monthlyIncome = db.prepare(
-      "SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE month = ? AND year = ? AND status = 'Paid'"
-    ).get(currentMonth, currentYear).total;
-    
-    const monthlyExpense = db.prepare(
-      "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE strftime('%m', expense_date) = ? AND strftime('%Y', expense_date) = ?"
-    ).get(String(new Date().getMonth() + 1).padStart(2, '0'), String(currentYear)).total;
-    
-    const pendingPayments = db.prepare(
-      "SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'Pending'"
-    ).get().total;
+app.get('/api/dashboard', asyncHandler(async (req, res) => {
+  const { data: rooms } = await supabase.from('rooms').select('id');
+  const totalRooms = rooms?.length || 0;
 
-    res.json({
-      totalRooms,
-      totalBeds,
-      occupiedBeds,
-      vacantBeds,
-      activeCustomers,
-      monthlyIncome,
-      monthlyExpense,
-      pendingPayments,
-      occupancyRate: totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : 0
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  const { data: beds } = await supabase.from('beds').select('id, status');
+  const totalBeds = beds?.length || 0;
+  const occupiedBeds = beds?.filter(b => b.status === 'Occupied').length || 0;
+  const vacantBeds = totalBeds - occupiedBeds;
+
+  const { data: activeCustomersData } = await supabase.from('customers').select('id').eq('status', 'Active');
+  const activeCustomers = activeCustomersData?.length || 0;
+
+  const currentMonth = new Date().toLocaleString('default', { month: 'long' });
+  const currentYear = new Date().getFullYear();
+
+  const { data: paidPayments } = await supabase
+    .from('payments')
+    .select('amount')
+    .eq('month', currentMonth)
+    .eq('year', currentYear)
+    .eq('status', 'Paid');
+  const monthlyIncome = paidPayments?.reduce((sum, p) => sum + Number(p.amount), 0) || 0;
+
+  // Monthly expenses
+  const monthStr = String(new Date().getMonth() + 1).padStart(2, '0');
+  const startDate = `${currentYear}-${monthStr}-01`;
+  const endDate = `${currentYear}-${monthStr}-31`;
+  const { data: monthExpenses } = await supabase
+    .from('expenses')
+    .select('amount')
+    .gte('expense_date', startDate)
+    .lte('expense_date', endDate);
+  const monthlyExpense = monthExpenses?.reduce((sum, e) => sum + Number(e.amount), 0) || 0;
+
+  const { data: pendingPaymentsData } = await supabase
+    .from('payments')
+    .select('amount')
+    .eq('status', 'Pending');
+  const pendingPayments = pendingPaymentsData?.reduce((sum, p) => sum + Number(p.amount), 0) || 0;
+
+  res.json({
+    totalRooms,
+    totalBeds,
+    occupiedBeds,
+    vacantBeds,
+    activeCustomers,
+    monthlyIncome,
+    monthlyExpense,
+    pendingPayments,
+    occupancyRate: totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : 0
+  });
+}));
 
 // ==================== ROOMS ====================
-app.get('/api/rooms', (req, res) => {
-  try {
-    const rooms = db.prepare(`
-      SELECT r.*, 
-        (SELECT COUNT(*) FROM beds WHERE room_id = r.id AND status = 'Occupied') as occupied_beds
-      FROM rooms r ORDER BY r.room_number
-    `).all();
-    res.json(rooms);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/rooms', asyncHandler(async (req, res) => {
+  const { data: rooms, error } = await supabase
+    .from('rooms')
+    .select('*')
+    .order('room_number');
+  
+  if (error) throw error;
 
-app.get('/api/rooms/:id', (req, res) => {
-  try {
-    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.id);
-    const beds = db.prepare(`
-      SELECT b.*, c.name as customer_name, c.phone as customer_phone 
-      FROM beds b LEFT JOIN customers c ON b.customer_id = c.id 
-      WHERE b.room_id = ?
-    `).all(req.params.id);
-    res.json({ ...room, beds });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  // Get occupied bed counts
+  const { data: beds } = await supabase.from('beds').select('room_id, status');
+  const roomsWithOccupancy = rooms.map(room => ({
+    ...room,
+    occupied_beds: beds?.filter(b => b.room_id === room.id && b.status === 'Occupied').length || 0
+  }));
 
-app.post('/api/rooms', (req, res) => {
-  try {
-    const { room_number, floor, room_type, sharing_type, total_beds, rent_per_bed } = req.body;
-    const result = db.prepare(
-      'INSERT INTO rooms (room_number, floor, room_type, sharing_type, total_beds, rent_per_bed) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(room_number, floor || 1, room_type || 'Non-AC', sharing_type, total_beds, rent_per_bed || 0);
-    
-    // Create beds
-    for (let b = 1; b <= total_beds; b++) {
-      db.prepare('INSERT INTO beds (room_id, bed_number) VALUES (?, ?)').run(result.lastInsertRowid, `${room_number} - Bed ${b}`);
-    }
-    
-    res.json({ id: result.lastInsertRowid, message: 'Room added successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  res.json(roomsWithOccupancy);
+}));
 
-app.put('/api/rooms/:id', (req, res) => {
-  try {
-    const { room_number, floor, room_type, sharing_type, rent_per_bed, status, maintenance_note } = req.body;
-    db.prepare(
-      'UPDATE rooms SET room_number=?, floor=?, room_type=?, sharing_type=?, rent_per_bed=?, status=?, maintenance_note=? WHERE id=?'
-    ).run(room_number, floor, room_type, sharing_type, rent_per_bed, status, maintenance_note, req.params.id);
-    res.json({ message: 'Room updated successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/rooms/:id', asyncHandler(async (req, res) => {
+  const { data: room, error } = await supabase
+    .from('rooms')
+    .select('*')
+    .eq('id', req.params.id)
+    .single();
+  
+  if (error) throw error;
 
-app.delete('/api/rooms/:id', (req, res) => {
-  try {
-    db.prepare('DELETE FROM beds WHERE room_id = ?').run(req.params.id);
-    db.prepare('DELETE FROM rooms WHERE id = ?').run(req.params.id);
-    res.json({ message: 'Room deleted successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  const { data: beds } = await supabase
+    .from('beds')
+    .select('*, customers(name, phone)')
+    .eq('room_id', req.params.id);
+
+  const bedsFormatted = beds?.map(b => ({
+    ...b,
+    customer_name: b.customers?.name || null,
+    customer_phone: b.customers?.phone || null,
+    customers: undefined
+  })) || [];
+
+  res.json({ ...room, beds: bedsFormatted });
+}));
+
+app.post('/api/rooms', asyncHandler(async (req, res) => {
+  const { room_number, floor, room_type, sharing_type, total_beds, rent_per_bed } = req.body;
+  
+  const { data: room, error } = await supabase
+    .from('rooms')
+    .insert({
+      room_number,
+      floor: floor || 1,
+      room_type: room_type || 'Non-AC',
+      sharing_type,
+      total_beds,
+      rent_per_bed: rent_per_bed || 0
+    })
+    .select()
+    .single();
+  
+  if (error) throw error;
+
+  // Create beds
+  const bedInserts = [];
+  for (let b = 1; b <= total_beds; b++) {
+    bedInserts.push({ room_id: room.id, bed_number: `${room_number} - Bed ${b}` });
   }
-});
+  await supabase.from('beds').insert(bedInserts);
+
+  res.json({ id: room.id, message: 'Room added successfully' });
+}));
+
+app.put('/api/rooms/:id', asyncHandler(async (req, res) => {
+  const { room_number, floor, room_type, sharing_type, rent_per_bed, status, maintenance_note } = req.body;
+  
+  const { error } = await supabase
+    .from('rooms')
+    .update({ room_number, floor, room_type, sharing_type, rent_per_bed, status, maintenance_note })
+    .eq('id', req.params.id);
+  
+  if (error) throw error;
+  res.json({ message: 'Room updated successfully' });
+}));
+
+app.delete('/api/rooms/:id', asyncHandler(async (req, res) => {
+  await supabase.from('beds').delete().eq('room_id', req.params.id);
+  const { error } = await supabase.from('rooms').delete().eq('id', req.params.id);
+  if (error) throw error;
+  res.json({ message: 'Room deleted successfully' });
+}));
 
 // ==================== CUSTOMERS ====================
-app.get('/api/customers', (req, res) => {
-  try {
-    const customers = db.prepare(`
-      SELECT c.*, r.room_number, b.bed_number 
-      FROM customers c 
-      LEFT JOIN rooms r ON c.room_id = r.id 
-      LEFT JOIN beds b ON c.bed_id = b.id
-      ORDER BY c.created_at DESC
-    `).all();
-    res.json(customers);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/customers', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase
+    .from('customers')
+    .select('*, rooms(room_number), beds(bed_number)')
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
 
-app.get('/api/customers/:id', (req, res) => {
-  try {
-    const customer = db.prepare(`
-      SELECT c.*, r.room_number, b.bed_number 
-      FROM customers c 
-      LEFT JOIN rooms r ON c.room_id = r.id 
-      LEFT JOIN beds b ON c.bed_id = b.id
-      WHERE c.id = ?
-    `).get(req.params.id);
-    const payments = db.prepare('SELECT * FROM payments WHERE customer_id = ? ORDER BY created_at DESC').all(req.params.id);
-    res.json({ ...customer, payments });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  const customers = data.map(c => ({
+    ...c,
+    room_number: c.rooms?.room_number || null,
+    bed_number: c.beds?.bed_number || null,
+    rooms: undefined,
+    beds: undefined
+  }));
 
-app.post('/api/customers', (req, res) => {
-  try {
-    const { name, phone, email, emergency_contact, emergency_name, aadhaar_number, address, room_id, bed_id, check_in_date, security_deposit, monthly_rent, notes } = req.body;
-    
-    const result = db.prepare(`
-      INSERT INTO customers (name, phone, email, emergency_contact, emergency_name, aadhaar_number, address, room_id, bed_id, check_in_date, security_deposit, monthly_rent, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(name, phone, email, emergency_contact, emergency_name, aadhaar_number, address, room_id, bed_id, check_in_date, security_deposit || 0, monthly_rent || 0, notes);
-    
-    // Update bed status
-    if (bed_id) {
-      db.prepare("UPDATE beds SET status = 'Occupied', customer_id = ? WHERE id = ?").run(result.lastInsertRowid, bed_id);
-      db.prepare("UPDATE rooms SET occupied_beds = occupied_beds + 1 WHERE id = ?").run(room_id);
-    }
-    
-    res.json({ id: result.lastInsertRowid, message: 'Customer added successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  res.json(customers);
+}));
 
-app.put('/api/customers/:id', (req, res) => {
-  try {
-    const { name, phone, email, emergency_contact, emergency_name, aadhaar_number, address, room_id, bed_id, monthly_rent, notes, status } = req.body;
-    
-    // If checking out
-    if (status === 'Vacated') {
-      const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);
-      if (customer.bed_id) {
-        db.prepare("UPDATE beds SET status = 'Vacant', customer_id = NULL WHERE id = ?").run(customer.bed_id);
-        db.prepare("UPDATE rooms SET occupied_beds = MAX(0, occupied_beds - 1) WHERE id = ?").run(customer.room_id);
-      }
-      db.prepare("UPDATE customers SET status = 'Vacated', check_out_date = CURRENT_DATE WHERE id = ?").run(req.params.id);
-    } else {
-      db.prepare(`
-        UPDATE customers SET name=?, phone=?, email=?, emergency_contact=?, emergency_name=?, aadhaar_number=?, address=?, room_id=?, bed_id=?, monthly_rent=?, notes=?, status=? WHERE id=?
-      `).run(name, phone, email, emergency_contact, emergency_name, aadhaar_number, address, room_id, bed_id, monthly_rent, notes, status || 'Active', req.params.id);
-    }
-    
-    res.json({ message: 'Customer updated successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/customers/:id', asyncHandler(async (req, res) => {
+  const { data: customer, error } = await supabase
+    .from('customers')
+    .select('*, rooms(room_number), beds(bed_number)')
+    .eq('id', req.params.id)
+    .single();
+  
+  if (error) throw error;
 
-app.delete('/api/customers/:id', (req, res) => {
-  try {
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);
+  const { data: payments } = await supabase
+    .from('payments')
+    .select('*')
+    .eq('customer_id', req.params.id)
+    .order('created_at', { ascending: false });
+
+  res.json({
+    ...customer,
+    room_number: customer.rooms?.room_number || null,
+    bed_number: customer.beds?.bed_number || null,
+    rooms: undefined,
+    beds: undefined,
+    payments: payments || []
+  });
+}));
+
+app.post('/api/customers', asyncHandler(async (req, res) => {
+  const { name, phone, email, emergency_contact, emergency_name, aadhaar_number, address, room_id, bed_id, check_in_date, security_deposit, monthly_rent, notes } = req.body;
+  
+  const { data: customer, error } = await supabase
+    .from('customers')
+    .insert({
+      name, phone, email, emergency_contact, emergency_name, aadhaar_number, address,
+      room_id: room_id || null,
+      bed_id: bed_id || null,
+      check_in_date, security_deposit: security_deposit || 0, monthly_rent: monthly_rent || 0, notes
+    })
+    .select()
+    .single();
+  
+  if (error) throw error;
+
+  // Update bed status
+  if (bed_id) {
+    await supabase.from('beds').update({ status: 'Occupied', customer_id: customer.id }).eq('id', bed_id);
+    await supabase.rpc('increment_occupied_beds', { room_id_param: room_id });
+  }
+
+  res.json({ id: customer.id, message: 'Customer added successfully' });
+}));
+
+app.put('/api/customers/:id', asyncHandler(async (req, res) => {
+  const { name, phone, email, emergency_contact, emergency_name, aadhaar_number, address, room_id, bed_id, monthly_rent, notes, status } = req.body;
+  
+  // If checking out
+  if (status === 'Vacated') {
+    const { data: customer } = await supabase.from('customers').select('*').eq('id', req.params.id).single();
     if (customer && customer.bed_id) {
-      db.prepare("UPDATE beds SET status = 'Vacant', customer_id = NULL WHERE id = ?").run(customer.bed_id);
-      db.prepare("UPDATE rooms SET occupied_beds = MAX(0, occupied_beds - 1) WHERE id = ?").run(customer.room_id);
+      await supabase.from('beds').update({ status: 'Vacant', customer_id: null }).eq('id', customer.bed_id);
+      await supabase.rpc('decrement_occupied_beds', { room_id_param: customer.room_id });
     }
-    db.prepare('DELETE FROM customers WHERE id = ?').run(req.params.id);
-    res.json({ message: 'Customer deleted successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    await supabase.from('customers')
+      .update({ status: 'Vacated', check_out_date: new Date().toISOString().split('T')[0] })
+      .eq('id', req.params.id);
+  } else {
+    await supabase.from('customers')
+      .update({ name, phone, email, emergency_contact, emergency_name, aadhaar_number, address, room_id, bed_id, monthly_rent, notes, status: status || 'Active' })
+      .eq('id', req.params.id);
   }
-});
+  
+  res.json({ message: 'Customer updated successfully' });
+}));
+
+app.delete('/api/customers/:id', asyncHandler(async (req, res) => {
+  const { data: customer } = await supabase.from('customers').select('*').eq('id', req.params.id).single();
+  if (customer && customer.bed_id) {
+    await supabase.from('beds').update({ status: 'Vacant', customer_id: null }).eq('id', customer.bed_id);
+    await supabase.rpc('decrement_occupied_beds', { room_id_param: customer.room_id });
+  }
+  const { error } = await supabase.from('customers').delete().eq('id', req.params.id);
+  if (error) throw error;
+  res.json({ message: 'Customer deleted successfully' });
+}));
 
 // ==================== PAYMENTS ====================
-app.get('/api/payments', (req, res) => {
-  try {
-    const payments = db.prepare(`
-      SELECT p.*, c.name as customer_name, c.phone as customer_phone, r.room_number
-      FROM payments p 
-      JOIN customers c ON p.customer_id = c.id
-      LEFT JOIN rooms r ON c.room_id = r.id
-      ORDER BY p.created_at DESC
-    `).all();
-    res.json(payments);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/payments', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase
+    .from('payments')
+    .select('*, customers(name, phone, room_id, rooms(room_number))')
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
 
-app.post('/api/payments', (req, res) => {
-  try {
-    const { customer_id, amount, payment_type, payment_method, payment_date, due_date, month, year, status, late_fee, notes } = req.body;
-    const invoice_number = 'INV-' + Date.now();
-    
-    const result = db.prepare(`
-      INSERT INTO payments (customer_id, amount, payment_type, payment_method, payment_date, due_date, month, year, status, invoice_number, late_fee, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(customer_id, amount, payment_type || 'Rent', payment_method || 'Cash', payment_date, due_date, month, year, status || 'Paid', invoice_number, late_fee || 0, notes);
-    
-    res.json({ id: result.lastInsertRowid, invoice_number, message: 'Payment recorded successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  const payments = data.map(p => ({
+    ...p,
+    customer_name: p.customers?.name || null,
+    customer_phone: p.customers?.phone || null,
+    room_number: p.customers?.rooms?.room_number || null,
+    customers: undefined
+  }));
 
-app.put('/api/payments/:id', (req, res) => {
-  try {
-    const { amount, payment_method, payment_date, status, late_fee, notes } = req.body;
-    db.prepare(
-      'UPDATE payments SET amount=?, payment_method=?, payment_date=?, status=?, late_fee=?, notes=? WHERE id=?'
-    ).run(amount, payment_method, payment_date, status, late_fee, notes, req.params.id);
-    res.json({ message: 'Payment updated successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  res.json(payments);
+}));
 
-app.delete('/api/payments/:id', (req, res) => {
-  try {
-    db.prepare('DELETE FROM payments WHERE id = ?').run(req.params.id);
-    res.json({ message: 'Payment deleted successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.post('/api/payments', asyncHandler(async (req, res) => {
+  const { customer_id, amount, payment_type, payment_method, payment_date, due_date, month, year, status, late_fee, notes } = req.body;
+  const invoice_number = 'INV-' + Date.now();
+  
+  const { data, error } = await supabase
+    .from('payments')
+    .insert({
+      customer_id, amount, payment_type: payment_type || 'Rent',
+      payment_method: payment_method || 'Cash', payment_date, due_date,
+      month, year, status: status || 'Paid', invoice_number,
+      late_fee: late_fee || 0, notes
+    })
+    .select()
+    .single();
+  
+  if (error) throw error;
+  res.json({ id: data.id, invoice_number, message: 'Payment recorded successfully' });
+}));
+
+app.put('/api/payments/:id', asyncHandler(async (req, res) => {
+  const { amount, payment_method, payment_date, status, late_fee, notes } = req.body;
+  const { error } = await supabase
+    .from('payments')
+    .update({ amount, payment_method, payment_date, status, late_fee, notes })
+    .eq('id', req.params.id);
+  
+  if (error) throw error;
+  res.json({ message: 'Payment updated successfully' });
+}));
+
+app.delete('/api/payments/:id', asyncHandler(async (req, res) => {
+  const { error } = await supabase.from('payments').delete().eq('id', req.params.id);
+  if (error) throw error;
+  res.json({ message: 'Payment deleted successfully' });
+}));
 
 // Generate monthly rent for all active customers
-app.post('/api/payments/generate-rent', (req, res) => {
-  try {
-    const { month, year } = req.body;
-    const activeCustomers = db.prepare("SELECT * FROM customers WHERE status = 'Active' AND monthly_rent > 0").all();
+app.post('/api/payments/generate-rent', asyncHandler(async (req, res) => {
+  const { month, year } = req.body;
+  
+  const { data: activeCustomers } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('status', 'Active')
+    .gt('monthly_rent', 0);
+  
+  let generated = 0;
+  for (const customer of (activeCustomers || [])) {
+    // Check if already exists
+    const { data: existing } = await supabase
+      .from('payments')
+      .select('id')
+      .eq('customer_id', customer.id)
+      .eq('month', month)
+      .eq('year', year)
+      .eq('payment_type', 'Rent')
+      .limit(1);
     
-    let generated = 0;
-    for (const customer of activeCustomers) {
-      const existing = db.prepare(
-        "SELECT * FROM payments WHERE customer_id = ? AND month = ? AND year = ? AND payment_type = 'Rent'"
-      ).get(customer.id, month, year);
-      
-      if (!existing) {
-        const invoice_number = 'INV-' + Date.now() + '-' + customer.id;
-        db.prepare(`
-          INSERT INTO payments (customer_id, amount, payment_type, month, year, status, invoice_number, due_date)
-          VALUES (?, ?, 'Rent', ?, ?, 'Pending', ?, ?)
-        `).run(customer.id, customer.monthly_rent, month, year, invoice_number, `${year}-${String(new Date(Date.parse(month + ' 1, 2000')).getMonth() + 1).padStart(2, '0')}-05`);
-        generated++;
-      }
+    if (!existing || existing.length === 0) {
+      const invoice_number = 'INV-' + Date.now() + '-' + customer.id;
+      const monthNum = String(new Date(Date.parse(month + ' 1, 2000')).getMonth() + 1).padStart(2, '0');
+      await supabase.from('payments').insert({
+        customer_id: customer.id,
+        amount: customer.monthly_rent,
+        payment_type: 'Rent',
+        month, year,
+        status: 'Pending',
+        invoice_number,
+        due_date: `${year}-${monthNum}-05`
+      });
+      generated++;
     }
-    
-    res.json({ message: `Rent generated for ${generated} customers`, generated });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
-});
+  
+  res.json({ message: `Rent generated for ${generated} customers`, generated });
+}));
 
 // ==================== ELECTRICITY ====================
-app.get('/api/electricity', (req, res) => {
-  try {
-    const readings = db.prepare(`
-      SELECT e.*, r.room_number 
-      FROM electricity e 
-      JOIN rooms r ON e.room_id = r.id
-      ORDER BY e.year DESC, e.created_at DESC
-    `).all();
-    res.json(readings);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/electricity', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase
+    .from('electricity')
+    .select('*, rooms(room_number)')
+    .order('year', { ascending: false })
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
 
-app.post('/api/electricity', (req, res) => {
-  try {
-    const { room_id, month, year, previous_reading, current_reading, rate_per_unit } = req.body;
-    const units = current_reading - previous_reading;
-    const rate = rate_per_unit || 8;
-    const total = units * rate;
-    
-    const result = db.prepare(`
-      INSERT INTO electricity (room_id, month, year, previous_reading, current_reading, units_consumed, rate_per_unit, total_amount)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(room_id, month, year, previous_reading, current_reading, units, rate, total);
-    
-    res.json({ id: result.lastInsertRowid, units_consumed: units, total_amount: total, message: 'Reading added successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  const readings = data.map(e => ({
+    ...e,
+    room_number: e.rooms?.room_number || null,
+    rooms: undefined
+  }));
 
-app.delete('/api/electricity/:id', (req, res) => {
-  try {
-    db.prepare('DELETE FROM electricity WHERE id = ?').run(req.params.id);
-    res.json({ message: 'Reading deleted successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  res.json(readings);
+}));
+
+app.post('/api/electricity', asyncHandler(async (req, res) => {
+  const { room_id, month, year, previous_reading, current_reading, rate_per_unit } = req.body;
+  const units = current_reading - previous_reading;
+  const rate = rate_per_unit || 8;
+  const total = units * rate;
+  
+  const { data, error } = await supabase
+    .from('electricity')
+    .insert({ room_id, month, year, previous_reading, current_reading, units_consumed: units, rate_per_unit: rate, total_amount: total })
+    .select()
+    .single();
+  
+  if (error) throw error;
+  res.json({ id: data.id, units_consumed: units, total_amount: total, message: 'Reading added successfully' });
+}));
+
+app.delete('/api/electricity/:id', asyncHandler(async (req, res) => {
+  const { error } = await supabase.from('electricity').delete().eq('id', req.params.id);
+  if (error) throw error;
+  res.json({ message: 'Reading deleted successfully' });
+}));
 
 // ==================== EXPENSES ====================
-app.get('/api/expenses', (req, res) => {
-  try {
-    const expenses = db.prepare('SELECT * FROM expenses ORDER BY expense_date DESC').all();
-    res.json(expenses);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/expenses', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase
+    .from('expenses')
+    .select('*')
+    .order('expense_date', { ascending: false });
+  
+  if (error) throw error;
+  res.json(data);
+}));
 
-app.post('/api/expenses', (req, res) => {
-  try {
-    const { category, description, amount, vendor, payment_method, expense_date, notes } = req.body;
-    const result = db.prepare(`
-      INSERT INTO expenses (category, description, amount, vendor, payment_method, expense_date, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(category, description, amount, vendor, payment_method || 'Cash', expense_date, notes);
-    
-    res.json({ id: result.lastInsertRowid, message: 'Expense added successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.post('/api/expenses', asyncHandler(async (req, res) => {
+  const { category, description, amount, vendor, payment_method, expense_date, notes } = req.body;
+  const { data, error } = await supabase
+    .from('expenses')
+    .insert({ category, description, amount, vendor, payment_method: payment_method || 'Cash', expense_date, notes })
+    .select()
+    .single();
+  
+  if (error) throw error;
+  res.json({ id: data.id, message: 'Expense added successfully' });
+}));
 
-app.put('/api/expenses/:id', (req, res) => {
-  try {
-    const { category, description, amount, vendor, payment_method, expense_date, notes } = req.body;
-    db.prepare(
-      'UPDATE expenses SET category=?, description=?, amount=?, vendor=?, payment_method=?, expense_date=?, notes=? WHERE id=?'
-    ).run(category, description, amount, vendor, payment_method, expense_date, notes, req.params.id);
-    res.json({ message: 'Expense updated successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.put('/api/expenses/:id', asyncHandler(async (req, res) => {
+  const { category, description, amount, vendor, payment_method, expense_date, notes } = req.body;
+  const { error } = await supabase
+    .from('expenses')
+    .update({ category, description, amount, vendor, payment_method, expense_date, notes })
+    .eq('id', req.params.id);
+  
+  if (error) throw error;
+  res.json({ message: 'Expense updated successfully' });
+}));
 
-app.delete('/api/expenses/:id', (req, res) => {
-  try {
-    db.prepare('DELETE FROM expenses WHERE id = ?').run(req.params.id);
-    res.json({ message: 'Expense deleted successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.delete('/api/expenses/:id', asyncHandler(async (req, res) => {
+  const { error } = await supabase.from('expenses').delete().eq('id', req.params.id);
+  if (error) throw error;
+  res.json({ message: 'Expense deleted successfully' });
+}));
 
 // Expense summary
-app.get('/api/expenses/summary/:year/:month', (req, res) => {
-  try {
-    const { year, month } = req.params;
-    const summary = db.prepare(`
-      SELECT category, SUM(amount) as total 
-      FROM expenses 
-      WHERE strftime('%Y', expense_date) = ? AND strftime('%m', expense_date) = ?
-      GROUP BY category
-    `).all(year, month.padStart(2, '0'));
-    
-    const total = summary.reduce((acc, item) => acc + item.total, 0);
-    res.json({ summary, total });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/expenses/summary/:year/:month', asyncHandler(async (req, res) => {
+  const { year, month } = req.params;
+  const startDate = `${year}-${month.padStart(2, '0')}-01`;
+  const endDate = `${year}-${month.padStart(2, '0')}-31`;
+  
+  const { data: expenses } = await supabase
+    .from('expenses')
+    .select('category, amount')
+    .gte('expense_date', startDate)
+    .lte('expense_date', endDate);
+  
+  // Group by category
+  const categoryMap = {};
+  (expenses || []).forEach(e => {
+    categoryMap[e.category] = (categoryMap[e.category] || 0) + Number(e.amount);
+  });
+  
+  const summary = Object.entries(categoryMap).map(([category, total]) => ({ category, total }));
+  const total = summary.reduce((acc, item) => acc + item.total, 0);
+  
+  res.json({ summary, total });
+}));
 
 // ==================== SETTINGS ====================
-app.get('/api/settings', (req, res) => {
-  try {
-    const settings = db.prepare('SELECT * FROM settings').all();
-    const settingsObj = {};
-    settings.forEach(s => { settingsObj[s.key] = s.value; });
-    res.json(settingsObj);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/settings', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase.from('settings').select('*');
+  if (error) throw error;
+  
+  const settingsObj = {};
+  (data || []).forEach(s => { settingsObj[s.key] = s.value; });
+  res.json(settingsObj);
+}));
 
-app.put('/api/settings', (req, res) => {
-  try {
-    const updates = req.body;
-    const stmt = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
-    for (const [key, value] of Object.entries(updates)) {
-      stmt.run(key, value);
-    }
-    res.json({ message: 'Settings updated successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+app.put('/api/settings', asyncHandler(async (req, res) => {
+  const updates = req.body;
+  for (const [key, value] of Object.entries(updates)) {
+    await supabase.from('settings').upsert({ key, value }, { onConflict: 'key' });
   }
-});
+  res.json({ message: 'Settings updated successfully' });
+}));
 
-// ==================== ID PROOF UPLOAD ====================
-app.post('/api/customers/:id/upload-id', upload.single('id_proof'), (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    db.prepare('UPDATE customers SET id_proof_photo = ? WHERE id = ?').run(req.file.filename, req.params.id);
-    res.json({ message: 'ID proof uploaded successfully', filename: req.file.filename });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// ==================== FILE UPLOAD (Supabase Storage) ====================
+app.post('/api/customers/:id/upload-id', upload.single('id_proof'), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  
+  const fileExt = req.file.originalname.split('.').pop();
+  const fileName = `id-proofs/${req.params.id}/${uuidv4()}.${fileExt}`;
+  
+  // Upload to Supabase Storage
+  const { data: uploadData, error: uploadError } = await supabase.storage
+    .from('uploads')
+    .upload(fileName, req.file.buffer, {
+      contentType: req.file.mimetype,
+      upsert: true
+    });
+  
+  if (uploadError) throw uploadError;
+  
+  // Get public URL
+  const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(fileName);
+  const publicUrl = urlData.publicUrl;
+  
+  // Update customer record
+  await supabase.from('customers').update({ id_proof_photo: publicUrl }).eq('id', req.params.id);
+  
+  res.json({ message: 'ID proof uploaded successfully', filename: publicUrl, url: publicUrl });
+}));
+
+// Serve uploaded files (redirect to Supabase Storage URL)
+app.get('/uploads/:filename', (req, res) => {
+  const { data } = supabase.storage.from('uploads').getPublicUrl(`id-proofs/${req.params.filename}`);
+  res.redirect(data.publicUrl);
 });
 
 // ==================== TENANT PROFILE (Public Shareable) ====================
-app.get('/api/tenant/:id', (req, res) => {
-  try {
-    const customer = db.prepare(`
-      SELECT c.id, c.name, c.phone, c.room_id, c.bed_id, c.check_in_date, c.monthly_rent, c.security_deposit, c.status,
-        r.room_number, b.bed_number
-      FROM customers c
-      LEFT JOIN rooms r ON c.room_id = r.id
-      LEFT JOIN beds b ON c.bed_id = b.id
-      WHERE c.id = ?
-    `).get(req.params.id);
-    
-    if (!customer) return res.status(404).json({ error: 'Tenant not found' });
+app.get('/api/tenant/:id', asyncHandler(async (req, res) => {
+  const { data: customer, error } = await supabase
+    .from('customers')
+    .select('id, name, phone, room_id, bed_id, check_in_date, monthly_rent, security_deposit, status, rooms(room_number), beds(bed_number)')
+    .eq('id', req.params.id)
+    .single();
+  
+  if (error || !customer) return res.status(404).json({ error: 'Tenant not found' });
 
-    const payments = db.prepare(`
-      SELECT id, amount, payment_type, payment_method, payment_date, month, year, status, invoice_number
-      FROM payments WHERE customer_id = ? ORDER BY created_at DESC
-    `).all(req.params.id);
+  const { data: payments } = await supabase
+    .from('payments')
+    .select('id, amount, payment_type, payment_method, payment_date, month, year, status, invoice_number')
+    .eq('customer_id', req.params.id)
+    .order('created_at', { ascending: false });
 
-    const settings = db.prepare('SELECT * FROM settings').all();
-    const settingsObj = {};
-    settings.forEach(s => { settingsObj[s.key] = s.value; });
+  const { data: settingsData } = await supabase.from('settings').select('*');
+  const settingsObj = {};
+  (settingsData || []).forEach(s => { settingsObj[s.key] = s.value; });
 
-    res.json({
-      tenant: customer,
-      payments,
-      hostel: {
-        name: settingsObj.hostel_name || "BISMI MEN'S PLAZA",
-        upi_id: settingsObj.upi_id || '9894092449@jupiteraxis',
-        payment_phone: settingsObj.payment_phone || '9894092449',
-        owner_phone: settingsObj.owner_phone || '9894092449'
-      }
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  res.json({
+    tenant: {
+      ...customer,
+      room_number: customer.rooms?.room_number || null,
+      bed_number: customer.beds?.bed_number || null,
+      rooms: undefined,
+      beds: undefined
+    },
+    payments: payments || [],
+    hostel: {
+      name: settingsObj.hostel_name || "BISMI MEN'S PLAZA",
+      upi_id: settingsObj.upi_id || '9894092449@jupiteraxis',
+      payment_phone: settingsObj.payment_phone || '9894092449',
+      owner_phone: settingsObj.owner_phone || '9894092449'
+    }
+  });
+}));
 
 // ==================== BEDS ====================
-app.get('/api/beds/vacant', (req, res) => {
-  try {
-    const beds = db.prepare(`
-      SELECT b.*, r.room_number, r.sharing_type, r.rent_per_bed
-      FROM beds b 
-      JOIN rooms r ON b.room_id = r.id 
-      WHERE b.status = 'Vacant'
-      ORDER BY r.room_number
-    `).all();
-    res.json(beds);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/beds/vacant', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase
+    .from('beds')
+    .select('*, rooms(room_number, sharing_type, rent_per_bed)')
+    .eq('status', 'Vacant')
+    .order('room_id');
+  
+  if (error) throw error;
+
+  const beds = (data || []).map(b => ({
+    ...b,
+    room_number: b.rooms?.room_number || null,
+    sharing_type: b.rooms?.sharing_type || null,
+    rent_per_bed: b.rooms?.rent_per_bed || 0,
+    rooms: undefined
+  }));
+
+  res.json(beds);
+}));
 
 // WhatsApp link generator
 app.get('/api/whatsapp/:phone/:message', (req, res) => {
@@ -514,170 +662,245 @@ app.get('/api/whatsapp/:phone/:message', (req, res) => {
 });
 
 // ==================== AUTH - ADMIN LOGIN ====================
-app.post('/api/admin/login', (req, res) => {
+app.post('/api/admin/login', asyncHandler(async (req, res) => {
   const { username, password } = req.body;
-  // Admin credentials (can be changed in settings later)
-  if (username === 'admin' && password === 'bismi2024') {
+  
+  // Check settings for admin credentials, fallback to defaults
+  const { data: settingsData } = await supabase.from('settings').select('*');
+  const settings = {};
+  (settingsData || []).forEach(s => { settings[s.key] = s.value; });
+  
+  const adminUser = settings.admin_username || 'admin';
+  const adminPass = settings.admin_password || 'bismi2024';
+  
+  if (username === adminUser && password === adminPass) {
     res.json({ success: true, role: 'admin', token: 'admin-' + Date.now() });
   } else {
     res.status(401).json({ error: 'Invalid credentials' });
   }
-});
+}));
 
 // ==================== AUTH - TENANT LOGIN ====================
-app.post('/api/tenant/login', (req, res) => {
-  try {
-    const { username, password } = req.body;
-    // Tenant login: username = name, password = phone number
-    const customer = db.prepare(`
-      SELECT c.*, r.room_number, b.bed_number 
-      FROM customers c 
-      LEFT JOIN rooms r ON c.room_id = r.id 
-      LEFT JOIN beds b ON c.bed_id = b.id
-      WHERE LOWER(c.name) = LOWER(?) AND c.phone = ? AND c.status = 'Active'
-    `).get(username, password);
-    
-    if (customer) {
-      res.json({ success: true, role: 'tenant', tenant: customer });
-    } else {
-      res.status(401).json({ error: 'Invalid name or phone number' });
-    }
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+app.post('/api/tenant/login', asyncHandler(async (req, res) => {
+  const { username, password } = req.body;
+  
+  // Tenant login: username = name (case-insensitive), password = phone number
+  const { data: customers } = await supabase
+    .from('customers')
+    .select('*, rooms(room_number), beds(bed_number)')
+    .ilike('name', username)
+    .eq('phone', password)
+    .eq('status', 'Active')
+    .limit(1);
+  
+  if (customers && customers.length > 0) {
+    const customer = customers[0];
+    res.json({
+      success: true,
+      role: 'tenant',
+      tenant: {
+        ...customer,
+        room_number: customer.rooms?.room_number || null,
+        bed_number: customer.beds?.bed_number || null,
+        rooms: undefined,
+        beds: undefined
+      }
+    });
+  } else {
+    res.status(401).json({ error: 'Invalid name or phone number' });
   }
-});
+}));
 
 // ==================== ISSUES / COMPLAINTS ====================
-app.get('/api/issues', (req, res) => {
-  try {
-    const issues = db.prepare(`
-      SELECT i.*, c.name as customer_name, c.phone as customer_phone, r.room_number
-      FROM issues i
-      LEFT JOIN customers c ON i.customer_id = c.id
-      LEFT JOIN rooms r ON c.room_id = r.id
-      ORDER BY i.created_at DESC
-    `).all();
-    res.json(issues);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/issues', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase
+    .from('issues')
+    .select('*, customers(name, phone, room_id, rooms(room_number))')
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
 
-app.get('/api/issues/tenant/:customerId', (req, res) => {
-  try {
-    const issues = db.prepare('SELECT * FROM issues WHERE customer_id = ? ORDER BY created_at DESC').all(req.params.customerId);
-    res.json(issues);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  const issues = (data || []).map(i => ({
+    ...i,
+    customer_name: i.customers?.name || null,
+    customer_phone: i.customers?.phone || null,
+    room_number: i.customers?.rooms?.room_number || null,
+    customers: undefined
+  }));
 
-app.post('/api/issues', (req, res) => {
-  try {
-    const { customer_id, title, description, category, priority } = req.body;
-    const result = db.prepare(`
-      INSERT INTO issues (customer_id, title, description, category, priority, status)
-      VALUES (?, ?, ?, ?, ?, 'Open')
-    `).run(customer_id, title, description, category || 'General', priority || 'Normal');
-    res.json({ id: result.lastInsertRowid, message: 'Issue raised successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  res.json(issues);
+}));
 
-app.put('/api/issues/:id', (req, res) => {
-  try {
-    const { status, admin_response } = req.body;
-    db.prepare('UPDATE issues SET status=?, admin_response=?, resolved_at=CASE WHEN ?="Resolved" THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id=?')
-      .run(status, admin_response, status, req.params.id);
-    res.json({ message: 'Issue updated successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/api/issues/tenant/:customerId', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase
+    .from('issues')
+    .select('*')
+    .eq('customer_id', req.params.customerId)
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  res.json(data || []);
+}));
 
-app.delete('/api/issues/:id', (req, res) => {
-  try {
-    db.prepare('DELETE FROM issues WHERE id = ?').run(req.params.id);
-    res.json({ message: 'Issue deleted successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+app.post('/api/issues', asyncHandler(async (req, res) => {
+  const { customer_id, title, description, category, priority } = req.body;
+  
+  const { data, error } = await supabase
+    .from('issues')
+    .insert({
+      customer_id, title, description,
+      category: category || 'General',
+      priority: priority || 'Normal',
+      status: 'Open'
+    })
+    .select()
+    .single();
+  
+  if (error) throw error;
+  res.json({ id: data.id, message: 'Issue raised successfully' });
+}));
+
+app.put('/api/issues/:id', asyncHandler(async (req, res) => {
+  const { status, admin_response } = req.body;
+  
+  const updateData = { status, admin_response };
+  if (status === 'Resolved') {
+    updateData.resolved_at = new Date().toISOString();
   }
-});
+  
+  const { error } = await supabase
+    .from('issues')
+    .update(updateData)
+    .eq('id', req.params.id);
+  
+  if (error) throw error;
+  res.json({ message: 'Issue updated successfully' });
+}));
+
+app.delete('/api/issues/:id', asyncHandler(async (req, res) => {
+  const { error } = await supabase.from('issues').delete().eq('id', req.params.id);
+  if (error) throw error;
+  res.json({ message: 'Issue deleted successfully' });
+}));
 
 // ==================== MONTHLY REPORT ====================
-app.get('/api/reports/monthly/:year/:month', (req, res) => {
-  try {
-    const { year, month } = req.params;
-    const monthName = new Date(year, parseInt(month) - 1).toLocaleString('default', { month: 'long' });
-    
-    // Rent collected
-    const rentCollected = db.prepare(
-      "SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE month = ? AND year = ? AND status = 'Paid'"
-    ).get(monthName, parseInt(year)).total;
-    
-    // Rent pending
-    const rentPending = db.prepare(
-      "SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE month = ? AND year = ? AND status = 'Pending'"
-    ).get(monthName, parseInt(year)).total;
-    
-    // Expenses
-    const expenses = db.prepare(`
-      SELECT category, SUM(amount) as total 
-      FROM expenses 
-      WHERE strftime('%Y', expense_date) = ? AND strftime('%m', expense_date) = ?
-      GROUP BY category
-    `).all(year, month.padStart(2, '0'));
-    
-    const totalExpense = expenses.reduce((acc, item) => acc + item.total, 0);
-    
-    // Occupancy
-    const totalBeds = db.prepare('SELECT COUNT(*) as count FROM beds').get().count;
-    const occupiedBeds = db.prepare("SELECT COUNT(*) as count FROM beds WHERE status = 'Occupied'").get().count;
-    
-    // Active tenants
-    const activeCustomers = db.prepare("SELECT COUNT(*) as count FROM customers WHERE status = 'Active'").get().count;
-    
-    // Payment list
-    const payments = db.prepare(`
-      SELECT p.*, c.name as customer_name, r.room_number
-      FROM payments p
-      JOIN customers c ON p.customer_id = c.id
-      LEFT JOIN rooms r ON c.room_id = r.id
-      WHERE p.month = ? AND p.year = ?
-      ORDER BY p.status DESC, c.name
-    `).all(monthName, parseInt(year));
+app.get('/api/reports/monthly/:year/:month', asyncHandler(async (req, res) => {
+  const { year, month } = req.params;
+  const monthName = new Date(year, parseInt(month) - 1).toLocaleString('default', { month: 'long' });
+  const yearNum = parseInt(year);
 
-    res.json({
-      month: monthName,
-      year: parseInt(year),
-      rentCollected,
-      rentPending,
-      totalExpense,
-      netIncome: rentCollected - totalExpense,
-      expenses,
-      occupancy: { total: totalBeds, occupied: occupiedBeds, vacant: totalBeds - occupiedBeds },
-      activeCustomers,
-      payments
-    });
+  // Rent collected
+  const { data: paidData } = await supabase
+    .from('payments')
+    .select('amount')
+    .eq('month', monthName)
+    .eq('year', yearNum)
+    .eq('status', 'Paid');
+  const rentCollected = paidData?.reduce((sum, p) => sum + Number(p.amount), 0) || 0;
+
+  // Rent pending
+  const { data: pendingData } = await supabase
+    .from('payments')
+    .select('amount')
+    .eq('month', monthName)
+    .eq('year', yearNum)
+    .eq('status', 'Pending');
+  const rentPending = pendingData?.reduce((sum, p) => sum + Number(p.amount), 0) || 0;
+
+  // Expenses
+  const startDate = `${year}-${month.padStart(2, '0')}-01`;
+  const endDate = `${year}-${month.padStart(2, '0')}-31`;
+  const { data: expensesData } = await supabase
+    .from('expenses')
+    .select('category, amount')
+    .gte('expense_date', startDate)
+    .lte('expense_date', endDate);
+
+  const categoryMap = {};
+  (expensesData || []).forEach(e => {
+    categoryMap[e.category] = (categoryMap[e.category] || 0) + Number(e.amount);
+  });
+  const expenses = Object.entries(categoryMap).map(([category, total]) => ({ category, total }));
+  const totalExpense = expenses.reduce((acc, item) => acc + item.total, 0);
+
+  // Occupancy
+  const { data: allBeds } = await supabase.from('beds').select('id, status');
+  const totalBeds = allBeds?.length || 0;
+  const occupiedBeds = allBeds?.filter(b => b.status === 'Occupied').length || 0;
+
+  // Active tenants
+  const { data: activeData } = await supabase.from('customers').select('id').eq('status', 'Active');
+  const activeCustomers = activeData?.length || 0;
+
+  // Payment list
+  const { data: paymentsList } = await supabase
+    .from('payments')
+    .select('*, customers(name, room_id, rooms(room_number))')
+    .eq('month', monthName)
+    .eq('year', yearNum)
+    .order('status', { ascending: false });
+
+  const payments = (paymentsList || []).map(p => ({
+    ...p,
+    customer_name: p.customers?.name || null,
+    room_number: p.customers?.rooms?.room_number || null,
+    customers: undefined
+  }));
+
+  res.json({
+    month: monthName,
+    year: yearNum,
+    rentCollected,
+    rentPending,
+    totalExpense,
+    netIncome: rentCollected - totalExpense,
+    expenses,
+    occupancy: { total: totalBeds, occupied: occupiedBeds, vacant: totalBeds - occupiedBeds },
+    activeCustomers,
+    payments
+  });
+}));
+
+// ==================== HEALTH CHECK ====================
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'Bismi PG Backend API is running!',
+    version: '3.0.0',
+    database: 'Supabase PostgreSQL',
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/api/health', async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('settings').select('key').limit(1);
+    if (error) throw error;
+    res.json({ status: 'healthy', database: 'connected', timestamp: new Date().toISOString() });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ status: 'unhealthy', database: 'disconnected', error: err.message });
   }
 });
 
-// Health check
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'Bismi PG Backend API is running!' });
+// ==================== 404 HANDLER ====================
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found', path: req.path });
 });
 
-// Create uploads directory
-const fs = require('fs');
-if (!fs.existsSync(path.join(__dirname, 'uploads'))) {
-  fs.mkdirSync(path.join(__dirname, 'uploads'), { recursive: true });
-}
+// ==================== GLOBAL ERROR HANDLER ====================
+app.use((err, req, res, next) => {
+  console.error('❌ Unhandled Error:', err);
+  res.status(500).json({
+    error: process.env.NODE_ENV === 'production' ? 'Something went wrong' : err.message
+  });
+});
 
+// ==================== START SERVER ====================
 app.listen(PORT, () => {
-  console.log(`\n🏠 Bismi PG Management App`);
+  console.log(`\n🏠 Bismi PG Management App v3.0`);
   console.log(`📱 Developed by ASVEN Technology`);
+  console.log(`🗄️  Database: Supabase PostgreSQL`);
   console.log(`🚀 Server running on http://localhost:${PORT}\n`);
 });
+
+module.exports = app;

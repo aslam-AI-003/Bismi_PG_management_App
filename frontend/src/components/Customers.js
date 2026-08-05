@@ -141,8 +141,8 @@ function Customers({ apiUrl, onViewProfile }) {
           <h3 className="section-title">📄 ID Proof</h3>
           {selectedCustomer.id_proof_photo ? (
             <div className="id-proof-display">
-              <img src={`${apiUrl}/uploads/${selectedCustomer.id_proof_photo}`} alt="ID Proof" className="id-proof-image" />
-              <button className="btn btn-secondary" onClick={() => window.open(`${apiUrl}/uploads/${selectedCustomer.id_proof_photo}`, '_blank')}>
+              <img src={selectedCustomer.id_proof_photo.startsWith('http') ? selectedCustomer.id_proof_photo : `${apiUrl}/uploads/${selectedCustomer.id_proof_photo}`} alt="ID Proof" className="id-proof-image" />
+              <button className="btn btn-secondary" onClick={() => window.open(selectedCustomer.id_proof_photo.startsWith('http') ? selectedCustomer.id_proof_photo : `${apiUrl}/uploads/${selectedCustomer.id_proof_photo}`, '_blank')}>
                 🔍 View Full Size
               </button>
             </div>

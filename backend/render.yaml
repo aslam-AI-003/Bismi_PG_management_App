@@ -1,0 +1,18 @@
+# Render deployment config for Bismi PG Backend
+services:
+  - type: web
+    name: bismi-pg-backend
+    env: node
+    region: singapore
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: FRONTEND_URL
+        value: https://bismi-pg-app.vercel.app
