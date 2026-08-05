@@ -12,8 +12,8 @@ app.use(cors());
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Serve frontend in production
-app.use(express.static(path.join(__dirname, '../frontend/build')));
+// Frontend is hosted on Vercel separately
+// app.use(express.static(path.join(__dirname, '../frontend/build')));
 
 // File upload config
 const storage = multer.diskStorage({
@@ -512,9 +512,161 @@ app.get('/api/whatsapp/:phone/:message', (req, res) => {
   res.json({ link: waLink });
 });
 
-// Catch-all for frontend routes
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/build', 'index.html'));
+// ==================== AUTH - ADMIN LOGIN ====================
+app.post('/api/admin/login', (req, res) => {
+  const { username, password } = req.body;
+  // Admin credentials (can be changed in settings later)
+  if (username === 'admin' && password === 'bismi2024') {
+    res.json({ success: true, role: 'admin', token: 'admin-' + Date.now() });
+  } else {
+    res.status(401).json({ error: 'Invalid credentials' });
+  }
+});
+
+// ==================== AUTH - TENANT LOGIN ====================
+app.post('/api/tenant/login', (req, res) => {
+  try {
+    const { username, password } = req.body;
+    // Tenant login: username = name, password = phone number
+    const customer = db.prepare(`
+      SELECT c.*, r.room_number, b.bed_number 
+      FROM customers c 
+      LEFT JOIN rooms r ON c.room_id = r.id 
+      LEFT JOIN beds b ON c.bed_id = b.id
+      WHERE LOWER(c.name) = LOWER(?) AND c.phone = ? AND c.status = 'Active'
+    `).get(username, password);
+    
+    if (customer) {
+      res.json({ success: true, role: 'tenant', tenant: customer });
+    } else {
+      res.status(401).json({ error: 'Invalid name or phone number' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== ISSUES / COMPLAINTS ====================
+app.get('/api/issues', (req, res) => {
+  try {
+    const issues = db.prepare(`
+      SELECT i.*, c.name as customer_name, c.phone as customer_phone, r.room_number
+      FROM issues i
+      LEFT JOIN customers c ON i.customer_id = c.id
+      LEFT JOIN rooms r ON c.room_id = r.id
+      ORDER BY i.created_at DESC
+    `).all();
+    res.json(issues);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/issues/tenant/:customerId', (req, res) => {
+  try {
+    const issues = db.prepare('SELECT * FROM issues WHERE customer_id = ? ORDER BY created_at DESC').all(req.params.customerId);
+    res.json(issues);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/issues', (req, res) => {
+  try {
+    const { customer_id, title, description, category, priority } = req.body;
+    const result = db.prepare(`
+      INSERT INTO issues (customer_id, title, description, category, priority, status)
+      VALUES (?, ?, ?, ?, ?, 'Open')
+    `).run(customer_id, title, description, category || 'General', priority || 'Normal');
+    res.json({ id: result.lastInsertRowid, message: 'Issue raised successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/issues/:id', (req, res) => {
+  try {
+    const { status, admin_response } = req.body;
+    db.prepare('UPDATE issues SET status=?, admin_response=?, resolved_at=CASE WHEN ?="Resolved" THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id=?')
+      .run(status, admin_response, status, req.params.id);
+    res.json({ message: 'Issue updated successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/issues/:id', (req, res) => {
+  try {
+    db.prepare('DELETE FROM issues WHERE id = ?').run(req.params.id);
+    res.json({ message: 'Issue deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== MONTHLY REPORT ====================
+app.get('/api/reports/monthly/:year/:month', (req, res) => {
+  try {
+    const { year, month } = req.params;
+    const monthName = new Date(year, parseInt(month) - 1).toLocaleString('default', { month: 'long' });
+    
+    // Rent collected
+    const rentCollected = db.prepare(
+      "SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE month = ? AND year = ? AND status = 'Paid'"
+    ).get(monthName, parseInt(year)).total;
+    
+    // Rent pending
+    const rentPending = db.prepare(
+      "SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE month = ? AND year = ? AND status = 'Pending'"
+    ).get(monthName, parseInt(year)).total;
+    
+    // Expenses
+    const expenses = db.prepare(`
+      SELECT category, SUM(amount) as total 
+      FROM expenses 
+      WHERE strftime('%Y', expense_date) = ? AND strftime('%m', expense_date) = ?
+      GROUP BY category
+    `).all(year, month.padStart(2, '0'));
+    
+    const totalExpense = expenses.reduce((acc, item) => acc + item.total, 0);
+    
+    // Occupancy
+    const totalBeds = db.prepare('SELECT COUNT(*) as count FROM beds').get().count;
+    const occupiedBeds = db.prepare("SELECT COUNT(*) as count FROM beds WHERE status = 'Occupied'").get().count;
+    
+    // Active tenants
+    const activeCustomers = db.prepare("SELECT COUNT(*) as count FROM customers WHERE status = 'Active'").get().count;
+    
+    // Payment list
+    const payments = db.prepare(`
+      SELECT p.*, c.name as customer_name, r.room_number
+      FROM payments p
+      JOIN customers c ON p.customer_id = c.id
+      LEFT JOIN rooms r ON c.room_id = r.id
+      WHERE p.month = ? AND p.year = ?
+      ORDER BY p.status DESC, c.name
+    `).all(monthName, parseInt(year));
+
+    res.json({
+      month: monthName,
+      year: parseInt(year),
+      rentCollected,
+      rentPending,
+      totalExpense,
+      netIncome: rentCollected - totalExpense,
+      expenses,
+      occupancy: { total: totalBeds, occupied: occupiedBeds, vacant: totalBeds - occupiedBeds },
+      activeCustomers,
+      payments
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Health check
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'Bismi PG Backend API is running!' });
 });
 
 // Create uploads directory
