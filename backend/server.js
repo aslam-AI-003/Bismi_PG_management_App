@@ -222,12 +222,27 @@ app.post('/api/rooms', asyncHandler(async (req, res) => {
 app.put('/api/rooms/:id', asyncHandler(async (req, res) => {
   const { room_number, floor, room_type, sharing_type, rent_per_bed, status, maintenance_note } = req.body;
   
+  // Build update object with only provided fields
+  const updateData = {};
+  if (room_number !== undefined) updateData.room_number = room_number;
+  if (floor !== undefined) updateData.floor = floor;
+  if (room_type !== undefined) updateData.room_type = room_type;
+  if (sharing_type !== undefined) updateData.sharing_type = sharing_type;
+  if (rent_per_bed !== undefined) updateData.rent_per_bed = rent_per_bed;
+  if (status !== undefined) updateData.status = status;
+  if (maintenance_note !== undefined) updateData.maintenance_note = maintenance_note;
+
   const { error } = await supabase
     .from('rooms')
-    .update({ room_number, floor, room_type, sharing_type, rent_per_bed, status, maintenance_note })
+    .update(updateData)
     .eq('id', req.params.id);
   
-  if (error) throw error;
+  if (error) {
+    if (error.code === '23505') {
+      return res.status(400).json({ error: 'Room number already exists' });
+    }
+    throw error;
+  }
   res.json({ message: 'Room updated successfully' });
 }));
 
