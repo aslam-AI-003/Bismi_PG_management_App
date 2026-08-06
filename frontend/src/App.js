@@ -63,8 +63,7 @@ function App() {
     return (
       <div className="app">
         <div className="main-content">
-          <button className="btn btn-secondary" onClick={() => setViewProfileId(null)}>← Back</button>
-          <TenantProfile apiUrl={API_URL} customerId={viewProfileId} />
+          <TenantProfile apiUrl={API_URL} tenantId={viewProfileId} onBack={() => setViewProfileId(null)} />
         </div>
       </div>
     );
