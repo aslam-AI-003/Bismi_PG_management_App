@@ -18,11 +18,19 @@ function Issues({ apiUrl }) {
 
   const updateIssue = async (id, status, response) => {
     try {
-      await axios.put(`${apiUrl}/api/issues/${id}`, { status, admin_response: response });
+      const payload = { status };
+      if (response && response.trim() !== '') {
+        payload.admin_response = response;
+      }
+      await axios.put(`${apiUrl}/api/issues/${id}`, payload);
       fetchIssues();
       setRespondingTo(null);
       setResponseText('');
-    } catch (err) { alert('Error updating issue'); }
+      alert('Issue updated successfully!');
+    } catch (err) { 
+      console.error('Issue update error:', err);
+      alert('Error updating issue: ' + (err.response?.data?.error || err.message)); 
+    }
   };
 
   const deleteIssue = async (id) => {

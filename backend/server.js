@@ -821,17 +821,30 @@ app.post('/api/issues', asyncHandler(async (req, res) => {
 app.put('/api/issues/:id', asyncHandler(async (req, res) => {
   const { status, admin_response } = req.body;
   
-  const updateData = { status, admin_response };
+  const updateData = {};
+  if (status) updateData.status = status;
+  if (admin_response !== undefined && admin_response !== '') updateData.admin_response = admin_response;
   if (status === 'Resolved') {
     updateData.resolved_at = new Date().toISOString();
   }
   
-  const { error } = await supabase
+  console.log('Updating issue', req.params.id, 'with:', updateData);
+  
+  const { data, error } = await supabase
     .from('issues')
     .update(updateData)
-    .eq('id', req.params.id);
+    .eq('id', req.params.id)
+    .select();
   
-  if (error) throw error;
+  if (error) {
+    console.error('Issue update error:', error);
+    return res.status(400).json({ error: error.message });
+  }
+  
+  if (!data || data.length === 0) {
+    return res.status(404).json({ error: 'Issue not found' });
+  }
+  
   res.json({ message: 'Issue updated successfully' });
 }));
 
