@@ -317,29 +317,48 @@ app.post('/api/customers', asyncHandler(async (req, res) => {
   // Update bed status
   if (bed_id) {
     await supabase.from('beds').update({ status: 'Occupied', customer_id: customer.id }).eq('id', bed_id);
-    await supabase.rpc('increment_occupied_beds', { room_id_param: room_id });
+    try { await supabase.rpc('increment_occupied_beds', { room_id_param: room_id }); } catch(e) {}
   }
 
   res.json({ id: customer.id, message: 'Customer added successfully' });
 }));
 
 app.put('/api/customers/:id', asyncHandler(async (req, res) => {
-  const { name, phone, email, emergency_contact, emergency_name, aadhaar_number, address, room_id, bed_id, monthly_rent, notes, status } = req.body;
+  const { name, phone, email, emergency_contact, emergency_name, aadhaar_number, address, room_id, bed_id, monthly_rent, security_deposit, notes, status } = req.body;
   
   // If checking out
   if (status === 'Vacated') {
     const { data: customer } = await supabase.from('customers').select('*').eq('id', req.params.id).single();
     if (customer && customer.bed_id) {
+      // Mark bed as vacant
       await supabase.from('beds').update({ status: 'Vacant', customer_id: null }).eq('id', customer.bed_id);
-      await supabase.rpc('decrement_occupied_beds', { room_id_param: customer.room_id });
+      // Try to decrement room occupied count (ignore error if function doesn't exist)
+      try { await supabase.rpc('decrement_occupied_beds', { room_id_param: customer.room_id }); } catch(e) {}
     }
+    // Also clear the bed_id and room_id from the customer record
     await supabase.from('customers')
-      .update({ status: 'Vacated', check_out_date: new Date().toISOString().split('T')[0] })
+      .update({ status: 'Vacated', check_out_date: new Date().toISOString().split('T')[0], bed_id: null, room_id: null })
       .eq('id', req.params.id);
   } else {
-    await supabase.from('customers')
-      .update({ name, phone, email, emergency_contact, emergency_name, aadhaar_number, address, room_id, bed_id, monthly_rent, notes, status: status || 'Active' })
-      .eq('id', req.params.id);
+    // Build update object - only include fields that are provided
+    const updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (phone !== undefined) updateData.phone = phone;
+    if (email !== undefined) updateData.email = email;
+    if (emergency_contact !== undefined) updateData.emergency_contact = emergency_contact;
+    if (emergency_name !== undefined) updateData.emergency_name = emergency_name;
+    if (aadhaar_number !== undefined) updateData.aadhaar_number = aadhaar_number;
+    if (address !== undefined) updateData.address = address;
+    if (room_id !== undefined) updateData.room_id = room_id;
+    if (bed_id !== undefined) updateData.bed_id = bed_id;
+    if (monthly_rent !== undefined) updateData.monthly_rent = monthly_rent;
+    if (security_deposit !== undefined) updateData.security_deposit = security_deposit;
+    if (notes !== undefined) updateData.notes = notes;
+    if (status !== undefined) updateData.status = status;
+    
+    if (Object.keys(updateData).length > 0) {
+      await supabase.from('customers').update(updateData).eq('id', req.params.id);
+    }
   }
   
   res.json({ message: 'Customer updated successfully' });
