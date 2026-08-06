@@ -114,27 +114,113 @@ function Customers({ apiUrl, onViewProfile }) {
 
   const filteredCustomers = customers.filter(c => filter === 'All' || c.status === filter);
 
+  const [editingCustomer, setEditingCustomer] = useState(false);
+  const [editData, setEditData] = useState({});
+
+  const startEditCustomer = () => {
+    setEditData({
+      name: selectedCustomer.name || '',
+      phone: selectedCustomer.phone || '',
+      email: selectedCustomer.email || '',
+      emergency_contact: selectedCustomer.emergency_contact || '',
+      emergency_name: selectedCustomer.emergency_name || '',
+      aadhaar_number: selectedCustomer.aadhaar_number || '',
+      address: selectedCustomer.address || '',
+      monthly_rent: selectedCustomer.monthly_rent || 0,
+      security_deposit: selectedCustomer.security_deposit || 0,
+      notes: selectedCustomer.notes || ''
+    });
+    setEditingCustomer(true);
+  };
+
+  const saveEditCustomer = async () => {
+    try {
+      await axios.put(`${apiUrl}/api/customers/${selectedCustomer.id}`, editData);
+      alert('Tenant updated successfully!');
+      setEditingCustomer(false);
+      viewCustomer(selectedCustomer.id);
+      fetchCustomers();
+    } catch (err) { alert('Error: ' + (err.response?.data?.error || err.message)); }
+  };
+
   if (selectedCustomer) {
     return (
       <div className="page">
         <div className="page-header">
-          <button className="back-btn" onClick={() => setSelectedCustomer(null)}>← Back</button>
+          <button className="back-btn" onClick={() => { setSelectedCustomer(null); setEditingCustomer(false); }}>← Back</button>
           <h2>{selectedCustomer.name}</h2>
         </div>
+
+        {!editingCustomer ? (
         <div className="detail-card">
           <div className="customer-avatar">👤</div>
           <p><strong>Phone:</strong> {selectedCustomer.phone}</p>
+          <p><strong>Email:</strong> {selectedCustomer.email || '-'}</p>
           <p><strong>Room:</strong> {selectedCustomer.room_number || 'Not assigned'}</p>
           <p><strong>Bed:</strong> {selectedCustomer.bed_number || 'Not assigned'}</p>
           <p><strong>Check-in:</strong> {selectedCustomer.check_in_date || '-'}</p>
           <p><strong>Monthly Rent:</strong> ₹{selectedCustomer.monthly_rent}</p>
           <p><strong>Security Deposit:</strong> ₹{selectedCustomer.security_deposit}</p>
           <p><strong>Aadhaar:</strong> {selectedCustomer.aadhaar_number || '-'}</p>
-          <p><strong>Emergency:</strong> {selectedCustomer.emergency_name} - {selectedCustomer.emergency_contact}</p>
+          <p><strong>Emergency:</strong> {selectedCustomer.emergency_name || '-'} - {selectedCustomer.emergency_contact || '-'}</p>
           <p><strong>Address:</strong> {selectedCustomer.address || '-'}</p>
           <p><strong>Status:</strong> <span className={`badge ${selectedCustomer.status === 'Active' ? 'badge-green' : 'badge-red'}`}>{selectedCustomer.status}</span></p>
           {selectedCustomer.notes && <p><strong>Notes:</strong> {selectedCustomer.notes}</p>}
+          <button className="btn btn-primary" onClick={startEditCustomer} style={{marginTop: '12px'}}>✏️ Edit Tenant Details</button>
         </div>
+        ) : (
+        <div className="form-card">
+          <h3 style={{marginBottom: '12px'}}>✏️ Edit Tenant: {selectedCustomer.name}</h3>
+          <div className="form-group">
+            <label>Name *</label>
+            <input type="text" value={editData.name} onChange={e => setEditData({...editData, name: e.target.value})} />
+          </div>
+          <div className="form-group">
+            <label>Phone *</label>
+            <input type="tel" value={editData.phone} onChange={e => setEditData({...editData, phone: e.target.value})} />
+          </div>
+          <div className="form-group">
+            <label>Email</label>
+            <input type="email" value={editData.email} onChange={e => setEditData({...editData, email: e.target.value})} />
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Emergency Name</label>
+              <input type="text" value={editData.emergency_name} onChange={e => setEditData({...editData, emergency_name: e.target.value})} />
+            </div>
+            <div className="form-group">
+              <label>Emergency Phone</label>
+              <input type="tel" value={editData.emergency_contact} onChange={e => setEditData({...editData, emergency_contact: e.target.value})} />
+            </div>
+          </div>
+          <div className="form-group">
+            <label>Aadhaar Number</label>
+            <input type="text" value={editData.aadhaar_number} onChange={e => setEditData({...editData, aadhaar_number: e.target.value})} />
+          </div>
+          <div className="form-group">
+            <label>Address</label>
+            <textarea value={editData.address} onChange={e => setEditData({...editData, address: e.target.value})} />
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Monthly Rent (₹)</label>
+              <input type="number" value={editData.monthly_rent} onChange={e => setEditData({...editData, monthly_rent: parseFloat(e.target.value)})} />
+            </div>
+            <div className="form-group">
+              <label>Security Deposit (₹)</label>
+              <input type="number" value={editData.security_deposit} onChange={e => setEditData({...editData, security_deposit: parseFloat(e.target.value)})} />
+            </div>
+          </div>
+          <div className="form-group">
+            <label>Notes</label>
+            <textarea value={editData.notes} onChange={e => setEditData({...editData, notes: e.target.value})} />
+          </div>
+          <div className="action-buttons" style={{marginTop: '12px'}}>
+            <button className="btn btn-primary" onClick={saveEditCustomer}>💾 Save Changes</button>
+            <button className="btn btn-secondary" onClick={() => setEditingCustomer(false)}>Cancel</button>
+          </div>
+        </div>
+        )}
 
         {/* ID Proof Section */}
         <div className="detail-card">
