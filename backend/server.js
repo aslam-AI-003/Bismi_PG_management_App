@@ -603,6 +603,30 @@ app.post('/api/customers/:id/upload-id', upload.single('id_proof'), asyncHandler
   res.json({ message: 'ID proof uploaded successfully', filename: publicUrl, url: publicUrl });
 }));
 
+// Profile Photo Upload
+app.post('/api/customers/:id/upload-photo', upload.single('id_proof'), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  
+  const fileExt = req.file.originalname.split('.').pop();
+  const fileName = `photos/${req.params.id}/${uuidv4()}.${fileExt}`;
+  
+  const { data: uploadData, error: uploadError } = await supabase.storage
+    .from('uploads')
+    .upload(fileName, req.file.buffer, {
+      contentType: req.file.mimetype,
+      upsert: true
+    });
+  
+  if (uploadError) throw uploadError;
+  
+  const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(fileName);
+  const publicUrl = urlData.publicUrl;
+  
+  await supabase.from('customers').update({ photo: publicUrl }).eq('id', req.params.id);
+  
+  res.json({ message: 'Profile photo uploaded successfully', url: publicUrl });
+}));
+
 // Serve uploaded files (redirect to Supabase Storage URL)
 app.get('/uploads/:filename', (req, res) => {
   const { data } = supabase.storage.from('uploads').getPublicUrl(`id-proofs/${req.params.filename}`);
@@ -613,7 +637,7 @@ app.get('/uploads/:filename', (req, res) => {
 app.get('/api/tenant/:id', asyncHandler(async (req, res) => {
   const { data: customer, error } = await supabase
     .from('customers')
-    .select('id, name, phone, room_id, bed_id, check_in_date, monthly_rent, security_deposit, status, rooms(room_number), beds(bed_number)')
+    .select('*, rooms(room_number), beds(bed_number)')
     .eq('id', req.params.id)
     .single();
   
@@ -621,7 +645,7 @@ app.get('/api/tenant/:id', asyncHandler(async (req, res) => {
 
   const { data: payments } = await supabase
     .from('payments')
-    .select('id, amount, payment_type, payment_method, payment_date, month, year, status, invoice_number')
+    .select('id, amount, payment_type, payment_method, payment_date, month, year, status, invoice_number, notes')
     .eq('customer_id', req.params.id)
     .order('created_at', { ascending: false });
 
