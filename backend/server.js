@@ -876,6 +876,105 @@ app.get('/api/reports/monthly/:year/:month', asyncHandler(async (req, res) => {
   });
 }));
 
+// ==================== WHATSAPP AUTO-REMINDER ====================
+// This endpoint can be called by a cron service (e.g., cron-job.org) every 2 days
+// URL: https://your-backend.onrender.com/api/reminders/send-pending
+// Schedule: Every 2 days (e.g., */2 * * * * in cron)
+app.post('/api/reminders/send-pending', asyncHandler(async (req, res) => {
+  // Get all pending payments
+  const { data: pendingPayments } = await supabase
+    .from('payments')
+    .select('*, customers(name, phone, room_id, rooms(room_number))')
+    .eq('status', 'Pending');
+
+  if (!pendingPayments || pendingPayments.length === 0) {
+    return res.json({ message: 'No pending payments found', sent: 0 });
+  }
+
+  const { data: settingsData } = await supabase.from('settings').select('*');
+  const settings = {};
+  (settingsData || []).forEach(s => { settings[s.key] = s.value; });
+  const upiId = settings.upi_id || '9894092449@jupiteraxis';
+  const paymentPhone = settings.payment_phone || '9894092449';
+
+  const reminders = [];
+  
+  for (const payment of pendingPayments) {
+    const name = payment.customers?.name || 'Tenant';
+    const phone = payment.customers?.phone || '';
+    const roomNumber = payment.customers?.rooms?.room_number || '';
+    
+    if (!phone) continue;
+
+    // Parse rent & EB from notes
+    const rentMatch = payment.notes?.match(/Rent: ₹(\d+)/);
+    const ebMatch = payment.notes?.match(/EB: ₹(\d+)/);
+    const rent = rentMatch ? rentMatch[1] : payment.amount;
+    const eb = ebMatch ? ebMatch[1] : '0';
+
+    const message = `Hi ${name},\n\n🏠 *BISMI MEN'S PLAZA*\n📅 ${payment.month} ${payment.year} - Payment Reminder\n\n💰 Rent: ₹${rent}\n⚡ EB: ₹${eb}\n━━━━━━━━━━━━\n📊 *Total Due: ₹${payment.amount}*\n\n💳 UPI: ${upiId}\n📱 Phone: ${paymentPhone}\n\nPlease pay at your earliest.\nThank you! 🙏\n\n- BISMI MEN'S PLAZA`;
+
+    const cleanPhone = phone.replace(/\D/g, '');
+    const waLink = `https://wa.me/91${cleanPhone}?text=${encodeURIComponent(message)}`;
+    
+    reminders.push({
+      name,
+      phone: cleanPhone,
+      room: roomNumber,
+      amount: payment.amount,
+      month: payment.month,
+      year: payment.year,
+      whatsapp_link: waLink,
+      message
+    });
+  }
+
+  res.json({ 
+    message: `Found ${reminders.length} pending payment reminders`,
+    sent: reminders.length,
+    reminders 
+  });
+}));
+
+// Get pending reminders list (for admin to manually send)
+app.get('/api/reminders/pending', asyncHandler(async (req, res) => {
+  const { data: pendingPayments } = await supabase
+    .from('payments')
+    .select('*, customers(name, phone, room_id, rooms(room_number))')
+    .eq('status', 'Pending');
+
+  if (!pendingPayments || pendingPayments.length === 0) {
+    return res.json([]);
+  }
+
+  const reminders = pendingPayments.map(payment => {
+    const name = payment.customers?.name || 'Tenant';
+    const phone = payment.customers?.phone || '';
+    const roomNumber = payment.customers?.rooms?.room_number || '';
+    const cleanPhone = phone.replace(/\D/g, '');
+
+    const rentMatch = payment.notes?.match(/Rent: ₹(\d+)/);
+    const ebMatch = payment.notes?.match(/EB: ₹(\d+)/);
+    const rent = rentMatch ? rentMatch[1] : payment.amount;
+    const eb = ebMatch ? ebMatch[1] : '0';
+
+    const message = `Hi ${name},\n\n🏠 *BISMI MEN'S PLAZA*\n📅 ${payment.month} ${payment.year} - Payment Reminder\n\n💰 Rent: ₹${rent}\n⚡ EB: ₹${eb}\n━━━━━━━━━━━━\n📊 *Total Due: ₹${payment.amount}*\n\n💳 UPI: 9894092449@jupiteraxis\n📱 Phone: 9894092449\n\nPlease pay at your earliest.\nThank you! 🙏`;
+
+    return {
+      payment_id: payment.id,
+      name,
+      phone: cleanPhone,
+      room: roomNumber,
+      amount: payment.amount,
+      month: payment.month,
+      year: payment.year,
+      whatsapp_link: `https://wa.me/91${cleanPhone}?text=${encodeURIComponent(message)}`
+    };
+  });
+
+  res.json(reminders);
+}));
+
 // ==================== HEALTH CHECK ====================
 app.get('/', (req, res) => {
   res.json({

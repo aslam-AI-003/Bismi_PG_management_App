@@ -96,6 +96,26 @@ function Payments({ apiUrl }) {
     }
   };
 
+  const sendAllReminders = async () => {
+    try {
+      const res = await axios.get(`${apiUrl}/api/reminders/pending`);
+      const reminders = res.data;
+      if (!reminders || reminders.length === 0) {
+        alert('No pending payments to remind!');
+        return;
+      }
+      if (window.confirm(`Send WhatsApp reminders to ${reminders.length} tenants with pending payments?`)) {
+        // Open WhatsApp links one by one (with small delay)
+        for (let i = 0; i < reminders.length; i++) {
+          setTimeout(() => {
+            window.open(reminders[i].whatsapp_link, '_blank');
+          }, i * 1500); // 1.5 second gap between each
+        }
+        alert(`Opening ${reminders.length} WhatsApp reminders. Send each one manually.`);
+      }
+    } catch (err) { alert('Error fetching reminders'); }
+  };
+
   const filteredPayments = payments.filter(p => {
     if (filter === 'All') return true;
     if (filter === 'Paid') return p.status === 'Paid';
@@ -127,10 +147,17 @@ function Payments({ apiUrl }) {
         </div>
       </div>
 
-      {/* Generate Rent Button */}
-      <button className="btn btn-secondary" onClick={generateMonthlyRent} style={{marginBottom: '12px'}}>
-        🔄 Generate Monthly Rent
-      </button>
+      {/* Action Buttons */}
+      <div style={{display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap'}}>
+        <button className="btn btn-secondary" onClick={generateMonthlyRent}>
+          🔄 Generate Monthly Rent
+        </button>
+        {totalPending > 0 && (
+          <button className="btn btn-whatsapp-all" onClick={sendAllReminders} style={{background: '#25D366', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold'}}>
+            📱 Send All Reminders ({payments.filter(p => p.status === 'Pending').length})
+          </button>
+        )}
+      </div>
 
       {showForm && (
         <form className="form-card" onSubmit={handleSubmit}>
